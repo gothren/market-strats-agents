@@ -1,7 +1,7 @@
 {
-  "name": "nanoclaw",
+  "name": "market-strats-agents",
   "version": "2.0.71",
-  "description": "Personal Claude assistant. Lightweight, secure, customizable.",
+  "description": "Market strategy agent fork based on NanoClaw.",
   "type": "module",
   "packageManager": "pnpm@10.33.0",
   "main": "dist/index.js",
