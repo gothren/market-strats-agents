@@ -17,7 +17,7 @@ Do not update `AGENTS.md` for these workflows until the commands below exist and
 
 ## Requested CLI Changes
 
-### 1. Compact Candidate Listing
+### 1. Compact Candidate Listing - DONE
 
 Add filters and compact output to `market-candidates list`.
 
@@ -57,7 +57,7 @@ Requirements:
 - `--compact` omits `evidence_json`, parsed `evidence`, `metadata_json`, parsed `metadata`, and timestamp fields.
 - Existing full list behavior remains the default for backward compatibility.
 
-### 2. Candidate Summary Command
+### 2. Candidate Summary Command - DONE
 
 Add:
 
@@ -97,7 +97,7 @@ Expected response:
 
 This should replace direct SQLite count queries in agent workflows.
 
-### 3. Batch Candidate Review
+### 3. Batch Candidate Review - DONE
 
 Add:
 
@@ -133,7 +133,7 @@ Requirements:
 - Should reject empty `--ids`.
 - Should preserve existing single-candidate `review` command.
 
-### 4. Compact Document Listing
+### 4. Compact Document Listing - DONE
 
 Add compact output to `market-documents list`.
 
@@ -166,7 +166,7 @@ Requirements:
 - `--compact` omits `content_text`, `content_hash`, `metadata_json`, and timestamp fields.
 - Existing full document list remains the default.
 
-### 5. Failed-Only Collection Retry
+### 5. Failed-Only Collection Retry - DONE
 
 Add one of these forms, whichever best matches existing command style:
 
@@ -187,7 +187,7 @@ Desired behavior:
 - Report visited/stored/failed/unsupported counts like regular collection.
 - This would have been useful after adding browser-compatible headers for Mend.
 
-### 6. Optional Import Dedupe
+### 6. Optional Import Dedupe - DONE
 
 Add:
 
@@ -205,7 +205,7 @@ Desired behavior:
 - Report imported vs skipped duplicates.
 - Existing import behavior remains unchanged unless `--dedupe` is passed.
 
-## Review Workflow To Support
+## Review Workflow To Support - DONE
 
 The target interactive review flow should be:
 
@@ -224,7 +224,7 @@ Recommended review notes:
 - Vendor claims: `Accepted by user review as vendor-reported claim; not independently verified.`
 - Broad platforms with adjacent features: `Accepted by user review: product includes code security; <adjacent feature> is adjacent to the market boundary.`
 
-## Tests To Add
+## Tests To Add - DONE
 
 - Compact candidate list omits evidence/metadata and supports `--status` and `--type`.
 - Candidate summary returns counts by status/type/confidence and latest extraction run.

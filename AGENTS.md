@@ -118,10 +118,16 @@ Run collection:
 pnpm ncl market-sources collect --market-id <MARKET_ID> --json
 ```
 
+Retry only sources whose latest stored document failed:
+
+```bash
+pnpm ncl market-sources collect --market-id <MARKET_ID> --failed-only --json
+```
+
 Review stored documents:
 
 ```bash
-pnpm ncl market-documents list --market-id <MARKET_ID> --json
+pnpm ncl market-documents list --market-id <MARKET_ID> --compact --json
 ```
 
 Inspect individual documents when needed:
@@ -147,7 +153,7 @@ If the user says "extract findings", "analyze fetched evidence", or "find compan
 First inspect stored documents:
 
 ```bash
-pnpm ncl market-documents list --market-id <MARKET_ID> --json
+pnpm ncl market-documents list --market-id <MARKET_ID> --compact --json
 pnpm ncl market-documents get <DOCUMENT_ID> --json
 ```
 
@@ -182,16 +188,24 @@ Import candidates in batch:
 pnpm ncl market-candidates import \
   --market-id <MARKET_ID> \
   --payload-file <JSON_FILE> \
+  --dedupe \
   --json
 ```
 
 Review candidates:
 
 ```bash
-pnpm ncl market-candidates list --market-id <MARKET_ID> --json
+pnpm ncl market-candidates summary --market-id <MARKET_ID> --json
+pnpm ncl market-candidates list --market-id <MARKET_ID> --status proposed --type capability --compact --json
 pnpm ncl market-candidates get <CANDIDATE_ID> --json
+pnpm ncl market-candidates review-batch --ids <ID_1>,<ID_2> --status accepted --review-note "Evidence supports this." --json
+pnpm ncl market-candidates review-batch --ids <ID_3> --status rejected --review-note "Unsupported by evidence." --json
+```
+
+Use single-candidate review when a batch is not appropriate:
+
+```bash
 pnpm ncl market-candidates review <CANDIDATE_ID> --status accepted --review-note "Evidence supports this." --json
-pnpm ncl market-candidates review <CANDIDATE_ID> --status rejected --review-note "Unsupported by evidence." --json
 ```
 
 Report:
@@ -213,6 +227,8 @@ Implemented:
 - exact URL source collection
 - market document storage/list/get
 - evidence-backed market candidate import/list/get/review
+- compact document and candidate listing
+- candidate summary and batch review
 - market run audit rows for collection
 
 Not implemented yet:
@@ -221,5 +237,4 @@ Not implemented yet:
 - RSS/search/Slack/manual connectors
 - internal LLM extraction
 - companies/products/categories
-- structured review workflow
 - market reports

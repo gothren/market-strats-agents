@@ -233,6 +233,77 @@ describe('market candidate db helpers', () => {
       reviewed_at: expect.any(String),
     });
   });
+
+  it('filters candidates and summarizes review state for a market', async () => {
+    const { marketDb, market, document } = await createFetchedDocument();
+    const run = marketDb.createMarketRun({
+      market_id: market.id,
+      source_id: null,
+      kind: 'extraction',
+      status: 'completed',
+      summary: null,
+    });
+    const capability = marketDb.createMarketCandidate({
+      market_id: market.id,
+      run_id: run.id,
+      candidate_type: 'capability',
+      name: 'Prompt injection detection',
+      summary: null,
+      confidence: 'high',
+      evidence: [{ document_id: document.id, quote: 'prompt injection', note: null }],
+      metadata: null,
+    });
+    marketDb.createMarketCandidate({
+      market_id: market.id,
+      run_id: run.id,
+      candidate_type: 'company',
+      name: 'Example Vendor',
+      summary: null,
+      confidence: 'medium',
+      evidence: [{ document_id: document.id, quote: 'Vendor', note: null }],
+      metadata: null,
+    });
+    marketDb.reviewMarketCandidate(capability.id, {
+      status: 'accepted',
+      review_note: 'Accepted by user review.',
+    });
+
+    expect(marketDb.listMarketCandidates(market.id, { status: 'accepted', candidate_type: 'capability' })).toEqual([
+      expect.objectContaining({ id: capability.id, status: 'accepted', candidate_type: 'capability' }),
+    ]);
+    expect(marketDb.summarizeMarketCandidates(market.id)).toMatchObject({
+      market_id: market.id,
+      total: 2,
+      by_status: { accepted: 1, proposed: 1 },
+      by_type: { capability: 1, company: 1 },
+      by_confidence: { high: 1, medium: 1 },
+      latest_extraction_run: {
+        id: run.id,
+        status: 'completed',
+        started_at: expect.any(String),
+        completed_at: null,
+      },
+    });
+  });
+
+  it('finds duplicate candidates by normalized market, type, and name', async () => {
+    const { marketDb, market, document } = await createFetchedDocument();
+    const candidate = marketDb.createMarketCandidate({
+      market_id: market.id,
+      run_id: null,
+      candidate_type: 'company',
+      name: 'Example Vendor',
+      summary: null,
+      confidence: 'medium',
+      evidence: [{ document_id: document.id, quote: 'Vendor', note: null }],
+      metadata: null,
+    });
+
+    expect(marketDb.findDuplicateMarketCandidate(market.id, 'company', '  example   vendor  ')).toMatchObject({
+      id: candidate.id,
+    });
+    expect(marketDb.findDuplicateMarketCandidate(market.id, 'product', 'example vendor')).toBeUndefined();
+  });
 });
 
 describe('market core db helpers', () => {
@@ -526,6 +597,54 @@ describe('market document db helpers', () => {
       metadata_json: JSON.stringify({ content_type: 'text/html' }),
     });
     expect(marketDb.listMarketDocuments(market.id)).toEqual([document]);
+  });
+
+  it('finds sources whose latest document failed for retry workflows', async () => {
+    const marketDb = await import('./markets.js');
+    const market = marketDb.createMarket({ name: 'AI Security', description: null });
+    const failedSource = marketDb.addMarketSource({
+      market_id: market.id,
+      url: 'https://example.com/broken',
+      source_type: 'exact_url',
+      trust_tier: 'trusted',
+      notes: null,
+    });
+    const okSource = marketDb.addMarketSource({
+      market_id: market.id,
+      url: 'https://example.com/ok',
+      source_type: 'exact_url',
+      trust_tier: 'official',
+      notes: null,
+    });
+
+    marketDb.createMarketDocument({
+      market_id: market.id,
+      source_id: failedSource.id,
+      run_id: null,
+      url: failedSource.url,
+      canonical_url: failedSource.url,
+      title: null,
+      content_text: '',
+      content_hash: null,
+      status: 'failed',
+      error: 'HTTP 500',
+      metadata_json: null,
+    });
+    marketDb.createMarketDocument({
+      market_id: market.id,
+      source_id: okSource.id,
+      run_id: null,
+      url: okSource.url,
+      canonical_url: okSource.url,
+      title: 'OK',
+      content_text: 'ok',
+      content_hash: 'sha256:ok',
+      status: 'fetched',
+      error: null,
+      metadata_json: null,
+    });
+
+    expect(marketDb.listMarketSourcesWithLatestFailedDocument(market.id)).toEqual([failedSource]);
   });
 
   it('rejects documents for unknown markets and sources', async () => {

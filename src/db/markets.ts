@@ -100,6 +100,15 @@ export interface MarketCandidate {
   reviewed_at: string | null;
 }
 
+export interface MarketCandidateSummary {
+  market_id: string;
+  total: number;
+  by_status: Partial<Record<MarketCandidateStatus, number>>;
+  by_type: Partial<Record<MarketCandidateType, number>>;
+  by_confidence: Partial<Record<MarketCandidateConfidence, number>>;
+  latest_extraction_run: MarketRun | null;
+}
+
 function now(): string {
   return new Date().toISOString();
 }
@@ -364,6 +373,27 @@ export function listMarketDocuments(marketId: string): MarketDocument[] {
     .all(marketId) as MarketDocument[];
 }
 
+export function listMarketSourcesWithLatestFailedDocument(marketId: string): MarketSource[] {
+  return getDb()
+    .prepare(
+      `SELECT s.*
+       FROM market_sources s
+       JOIN market_documents d ON d.source_id = s.id
+       WHERE s.market_id = ?
+         AND s.status = 'active'
+         AND d.id = (
+           SELECT latest.id
+           FROM market_documents latest
+           WHERE latest.source_id = s.id
+           ORDER BY latest.created_at DESC, latest.id DESC
+           LIMIT 1
+         )
+         AND d.status = 'failed'
+       ORDER BY s.created_at, s.id`,
+    )
+    .all(marketId) as MarketSource[];
+}
+
 const MARKET_CANDIDATE_TYPES: MarketCandidateType[] = [
   'company',
   'product',
@@ -466,10 +496,24 @@ export function getMarketCandidate(id: string): MarketCandidate | undefined {
   return getDb().prepare('SELECT * FROM market_candidates WHERE id = ?').get(id) as MarketCandidate | undefined;
 }
 
-export function listMarketCandidates(marketId: string): MarketCandidate[] {
+export function listMarketCandidates(
+  marketId: string,
+  filters?: { status?: MarketCandidateStatus | null; candidate_type?: MarketCandidateType | null },
+): MarketCandidate[] {
+  const clauses = ['market_id = @market_id'];
+  const params: Record<string, unknown> = { market_id: marketId };
+  if (filters?.status) {
+    clauses.push('status = @status');
+    params.status = filters.status;
+  }
+  if (filters?.candidate_type) {
+    clauses.push('candidate_type = @candidate_type');
+    params.candidate_type = filters.candidate_type;
+  }
+
   return getDb()
-    .prepare('SELECT * FROM market_candidates WHERE market_id = ? ORDER BY created_at DESC, id DESC')
-    .all(marketId) as MarketCandidate[];
+    .prepare(`SELECT * FROM market_candidates WHERE ${clauses.join(' AND ')} ORDER BY created_at DESC, id DESC`)
+    .all(params) as MarketCandidate[];
 }
 
 export function reviewMarketCandidate(
@@ -499,4 +543,51 @@ export function reviewMarketCandidate(
   if (result.changes === 0) throw new Error(`market candidate not found: ${id}`);
 
   return getMarketCandidate(id)!;
+}
+
+export function summarizeMarketCandidates(marketId: string): MarketCandidateSummary {
+  const candidates = listMarketCandidates(marketId);
+  const latest_extraction_run = getDb()
+    .prepare(
+      `SELECT *
+       FROM market_runs
+       WHERE market_id = ? AND kind = 'extraction'
+       ORDER BY started_at DESC, id DESC
+       LIMIT 1`,
+    )
+    .get(marketId) as MarketRun | undefined;
+
+  return {
+    market_id: marketId,
+    total: candidates.length,
+    by_status: countMarketRows(candidates.map((candidate) => candidate.status)),
+    by_type: countMarketRows(candidates.map((candidate) => candidate.candidate_type)),
+    by_confidence: countMarketRows(candidates.map((candidate) => candidate.confidence)),
+    latest_extraction_run: latest_extraction_run ?? null,
+  };
+}
+
+function normalizeCandidateName(name: string): string {
+  return name.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function countMarketRows<T extends string>(values: T[]): Partial<Record<T, number>> {
+  return values.reduce(
+    (acc, value) => {
+      acc[value] = (acc[value] ?? 0) + 1;
+      return acc;
+    },
+    {} as Partial<Record<T, number>>,
+  );
+}
+
+export function findDuplicateMarketCandidate(
+  marketId: string,
+  candidateType: MarketCandidateType,
+  name: string,
+): MarketCandidate | undefined {
+  const normalized = normalizeCandidateName(name);
+  return listMarketCandidates(marketId, { candidate_type: candidateType }).find(
+    (candidate) => normalizeCandidateName(candidate.name) === normalized,
+  );
 }

@@ -10,11 +10,14 @@ import {
   getMarketBoundary,
   getMarketCandidate,
   getMarketDocument,
+  findDuplicateMarketCandidate,
   listMarketCandidates,
   listMarketDocuments,
   listMarketSources,
+  listMarketSourcesWithLatestFailedDocument,
   listMarkets,
   reviewMarketCandidate,
+  summarizeMarketCandidates,
   upsertMarketBoundary,
   type MarketCandidate,
   type MarketCandidateConfidence,
@@ -54,6 +57,10 @@ function str(value: unknown, name: string): string {
 function nullableStr(value: unknown): string | null {
   if (value === undefined || value === null) return null;
   return String(value);
+}
+
+function bool(value: unknown): boolean {
+  return value === true || value === 'true' || value === '1' || value === 1;
 }
 
 function optionalStr(value: unknown): string | null {
@@ -283,7 +290,10 @@ register({
   description: 'Collect evidence documents from configured market sources.',
   resource: 'market-sources',
   access: 'open',
-  parseArgs: (raw) => ({ market_id: str(raw.market_id ?? raw['market-id'], 'market_id') }),
+  parseArgs: (raw) => ({
+    market_id: str(raw.market_id ?? raw['market-id'], 'market_id'),
+    failed_only: bool(raw.failed_only ?? raw['failed-only']),
+  }),
   handler: async (args) => {
     const market = getMarket(args.market_id);
     if (!market) throw new Error(`market not found: ${args.market_id}`);
@@ -306,8 +316,11 @@ register({
     const unsupported: Array<{ source_id: string; source_type: MarketSourceType; url: string; reason: string }> = [];
     const documents: MarketDocument[] = [];
     let visited = 0;
+    const sources = args.failed_only
+      ? listMarketSourcesWithLatestFailedDocument(args.market_id)
+      : listMarketSources(args.market_id).filter((item) => item.status === 'active');
 
-    for (const source of listMarketSources(args.market_id).filter((item) => item.status === 'active')) {
+    for (const source of sources) {
       if (source.source_type !== 'exact_url') {
         unsupported.push({
           source_id: source.id,
@@ -368,12 +381,31 @@ register({
   description: 'List collected evidence documents for a market.',
   resource: 'market-documents',
   access: 'open',
-  parseArgs: (raw) => ({ market_id: str(raw.market_id ?? raw['market-id'], 'market_id') }),
+  parseArgs: (raw) => ({
+    market_id: str(raw.market_id ?? raw['market-id'], 'market_id'),
+    compact: bool(raw.compact),
+  }),
   handler: async (args) => ({
-    documents: listMarketDocuments(args.market_id),
+    documents: listMarketDocuments(args.market_id).map((document) =>
+      args.compact ? compactDocument(document) : document,
+    ),
     next_actions: [`ncl market-documents get <DOCUMENT_ID>`, `ncl markets get ${args.market_id}`],
   }),
 });
+
+function compactDocument(document: MarketDocument) {
+  return {
+    id: document.id,
+    market_id: document.market_id,
+    source_id: document.source_id,
+    run_id: document.run_id,
+    title: document.title,
+    status: document.status,
+    error: document.error,
+    url: document.url,
+    canonical_url: document.canonical_url,
+  };
+}
 
 register({
   name: 'market-documents-get',
@@ -457,6 +489,30 @@ function candidateWithParsedJson(candidate: MarketCandidate) {
   };
 }
 
+function compactCandidate(candidate: MarketCandidate) {
+  return {
+    id: candidate.id,
+    candidate_type: candidate.candidate_type,
+    name: candidate.name,
+    summary: candidate.summary,
+    confidence: candidate.confidence,
+    status: candidate.status,
+  };
+}
+
+function normalizeCandidateDisplayName(name: string): string {
+  return name.trim().replace(/\s+/g, ' ');
+}
+
+function parseIds(value: unknown): string[] {
+  const ids = str(value, 'ids')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (ids.length === 0) throw new Error('--ids (ids) must include at least one candidate id');
+  return ids;
+}
+
 function countBy<T extends string>(values: T[]): Record<T, number> {
   return values.reduce(
     (acc, value) => {
@@ -475,6 +531,7 @@ register({
   parseArgs: (raw) => ({
     market_id: str(raw.market_id ?? raw['market-id'], 'market_id'),
     payload_file: str(raw.payload_file ?? raw['payload-file'], 'payload_file'),
+    dedupe: bool(raw.dedupe),
   }),
   handler: async (args) => {
     const market = getMarket(args.market_id);
@@ -490,20 +547,36 @@ register({
     });
 
     try {
-      const imported = candidates.map((candidate) =>
-        createMarketCandidate({
-          market_id: args.market_id,
-          run_id: run.id,
-          candidate_type: candidate.candidate_type,
-          name: candidate.name,
-          summary: candidate.summary,
-          confidence: candidate.confidence,
-          evidence: candidate.evidence,
-          metadata: candidate.metadata,
-        }),
-      );
+      const imported: MarketCandidate[] = [];
+      const skipped_duplicates: Array<{ candidate_type: MarketCandidateType; name: string; existing_id: string }> = [];
+      for (const candidate of candidates) {
+        const duplicate = args.dedupe
+          ? findDuplicateMarketCandidate(args.market_id, candidate.candidate_type, candidate.name)
+          : undefined;
+        if (duplicate) {
+          skipped_duplicates.push({
+            candidate_type: candidate.candidate_type,
+            name: normalizeCandidateDisplayName(candidate.name),
+            existing_id: duplicate.id,
+          });
+          continue;
+        }
+        imported.push(
+          createMarketCandidate({
+            market_id: args.market_id,
+            run_id: run.id,
+            candidate_type: candidate.candidate_type,
+            name: candidate.name,
+            summary: candidate.summary,
+            confidence: candidate.confidence,
+            evidence: candidate.evidence,
+            metadata: candidate.metadata,
+          }),
+        );
+      }
       const summary = {
         imported: imported.length,
+        skipped_duplicates: skipped_duplicates.length,
         by_type: countBy(imported.map((candidate) => candidate.candidate_type)),
         by_confidence: countBy(imported.map((candidate) => candidate.confidence)),
       };
@@ -511,6 +584,7 @@ register({
       return {
         run: completed,
         summary,
+        skipped_duplicates,
         candidates: imported.map(candidateWithParsedJson),
         next_actions: [`ncl market-candidates list --market-id ${args.market_id}`, `ncl markets get ${args.market_id}`],
       };
@@ -529,11 +603,34 @@ register({
   description: 'List evidence-backed extraction candidates for a market.',
   resource: 'market-candidates',
   access: 'open',
-  parseArgs: (raw) => ({ market_id: str(raw.market_id ?? raw['market-id'], 'market_id') }),
+  parseArgs: (raw) => ({
+    market_id: str(raw.market_id ?? raw['market-id'], 'market_id'),
+    status:
+      raw.status === undefined || raw.status === null || raw.status === ''
+        ? null
+        : (requiredEnum(raw.status, CANDIDATE_STATUSES, 'status') as MarketCandidateStatus),
+    candidate_type:
+      raw.type === undefined || raw.type === null || raw.type === ''
+        ? null
+        : (requiredEnum(raw.type, CANDIDATE_TYPES, 'type') as MarketCandidateType),
+    compact: bool(raw.compact),
+  }),
   handler: async (args) => ({
-    candidates: listMarketCandidates(args.market_id).map(candidateWithParsedJson),
+    candidates: listMarketCandidates(args.market_id, {
+      status: args.status,
+      candidate_type: args.candidate_type,
+    }).map((candidate) => (args.compact ? compactCandidate(candidate) : candidateWithParsedJson(candidate))),
     next_actions: [`ncl market-candidates get <CANDIDATE_ID>`, `ncl markets get ${args.market_id}`],
   }),
+});
+
+register({
+  name: 'market-candidates-summary',
+  description: 'Summarize evidence-backed extraction candidates for a market.',
+  resource: 'market-candidates',
+  access: 'open',
+  parseArgs: (raw) => ({ market_id: str(raw.market_id ?? raw['market-id'], 'market_id') }),
+  handler: async (args) => summarizeMarketCandidates(args.market_id),
 });
 
 register({
@@ -573,6 +670,46 @@ register({
     return {
       candidate: candidateWithParsedJson(candidate),
       next_actions: [`ncl market-candidates list --market-id ${candidate.market_id}`],
+    };
+  },
+});
+
+register({
+  name: 'market-candidates-review-batch',
+  description: 'Update review status for multiple extraction candidates.',
+  resource: 'market-candidates',
+  access: 'open',
+  parseArgs: (raw) => ({
+    ids: parseIds(raw.ids),
+    status: requiredEnum(raw.status, ['accepted', 'rejected'] as const, 'status') as Extract<
+      MarketCandidateStatus,
+      'accepted' | 'rejected'
+    >,
+    review_note: nullableStr(raw.review_note ?? raw['review-note']),
+  }),
+  handler: async (args) => {
+    const reviewed: Array<{ id: string; status: MarketCandidateStatus }> = [];
+    const failed: Array<{ id: string; error: string }> = [];
+    for (const id of args.ids) {
+      try {
+        const candidate = reviewMarketCandidate(id, {
+          status: args.status,
+          review_note: args.review_note,
+        });
+        reviewed.push({ id: candidate.id, status: candidate.status });
+      } catch (e) {
+        failed.push({ id, error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+
+    return {
+      reviewed,
+      failed,
+      summary: {
+        requested: args.ids.length,
+        reviewed: reviewed.length,
+        failed: failed.length,
+      },
     };
   },
 });
