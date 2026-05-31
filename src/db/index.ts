@@ -51,3 +51,18 @@ export {
   updateContainerConfigJson,
   deleteContainerConfig,
 } from './container-configs.js';
+export {
+  createMarket,
+  getMarket,
+  getMarketByName,
+  listMarkets,
+  updateMarket,
+  upsertMarketBoundary,
+  getMarketBoundary,
+  addMarketSource,
+  listMarketSources,
+  createMarketRun,
+  completeMarketRun,
+  listMarketRuns,
+  getLatestMarketRun,
+} from './markets.js';

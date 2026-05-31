@@ -48,7 +48,16 @@ export async function dispatch(req: RequestFrame, ctx: CallerContext): Promise<R
     }
 
     if (cliScope === 'group') {
-      const allowed = new Set(['groups', 'sessions', 'destinations', 'members']);
+      const allowed = new Set([
+        'groups',
+        'sessions',
+        'destinations',
+        'members',
+        'markets',
+        'market-boundaries',
+        'market-sources',
+        'market-runs',
+      ]);
       // Only allow whitelisted resources and general commands (no resource, like help)
       if (cmd.resource && !allowed.has(cmd.resource)) {
         return err(req.id, 'forbidden', `CLI access is scoped to this agent group. Cannot access "${cmd.resource}".`);
@@ -78,10 +87,13 @@ export async function dispatch(req: RequestFrame, ctx: CallerContext): Promise<R
 
       // Auto-fill agent-group-related args so the agent doesn't need
       // to pass its own group ID explicitly.
-      const fill: Record<string, unknown> = {
-        agent_group_id: req.args.agent_group_id ?? ctx.agentGroupId,
-        group: req.args.group ?? ctx.agentGroupId,
-      };
+      const fill: Record<string, unknown> = {};
+      if (cmd.resource === 'sessions') {
+        fill.agent_group_id = req.args.agent_group_id ?? ctx.agentGroupId;
+      }
+      if (cmd.resource === 'members') {
+        fill.group = req.args.group ?? ctx.agentGroupId;
+      }
       // Only auto-fill --id for resources where it IS the agent group ID
       // (groups, destinations). For sessions/members --id is a different key.
       if (cmd.resource === 'groups' || cmd.resource === 'destinations') {

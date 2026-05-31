@@ -90,6 +90,24 @@ register({
 });
 
 register({
+  name: 'markets-list',
+  description: 'test command (markets resource)',
+  resource: 'markets',
+  access: 'open',
+  parseArgs: (raw) => raw,
+  handler: async (args) => ({ echo: args }),
+});
+
+register({
+  name: 'market-sources-list',
+  description: 'test command (market-sources resource)',
+  resource: 'market-sources',
+  access: 'open',
+  parseArgs: (raw) => raw,
+  handler: async (args) => ({ echo: args }),
+});
+
+register({
   name: 'wirings-list',
   description: 'test command (wirings resource — not allowed)',
   resource: 'wirings',
@@ -158,6 +176,8 @@ beforeEach(() => {
     sessions: 'agent_group_id',
     destinations: 'agent_group_id',
     members: 'agent_group_id',
+    markets: 'id',
+    'market-sources': 'market_id',
   };
   mockGetResource.mockImplementation((plural: string) =>
     scopeFields[plural] ? { scopeField: scopeFields[plural] } : undefined,
@@ -301,6 +321,35 @@ describe('CLI scope enforcement', () => {
     if (resp.ok) {
       const data = resp.data as { echo: Record<string, unknown> };
       expect(data.echo.group).toBe('g1');
+    }
+  });
+
+  it('group: allows market commands without injecting group-specific arguments', async () => {
+    mockGetContainerConfig.mockReturnValue({ cli_scope: 'group' });
+
+    const resp = await dispatch({ id: '1', command: 'markets-list', args: {} }, agentCtx());
+
+    expect(resp.ok).toBe(true);
+    if (resp.ok) {
+      const data = resp.data as { echo: Record<string, unknown> };
+      expect(data.echo.id).toBeUndefined();
+      expect(data.echo.agent_group_id).toBeUndefined();
+      expect(data.echo.group).toBeUndefined();
+    }
+  });
+
+  it('group: allows market source commands for agentic research workflows', async () => {
+    mockGetContainerConfig.mockReturnValue({ cli_scope: 'group' });
+
+    const resp = await dispatch(
+      { id: '1', command: 'market-sources-list', args: { market_id: 'mkt_123' } },
+      agentCtx(),
+    );
+
+    expect(resp.ok).toBe(true);
+    if (resp.ok) {
+      const data = resp.data as { echo: Record<string, unknown> };
+      expect(data.echo.market_id).toBe('mkt_123');
     }
   });
 
