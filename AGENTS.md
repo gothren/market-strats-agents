@@ -124,7 +124,7 @@ Retry only sources whose latest stored document failed:
 pnpm ncl market-sources collect --market-id <MARKET_ID> --failed-only --json
 ```
 
-Review stored documents:
+Use compact document listing by default to avoid dumping full `content_text`:
 
 ```bash
 pnpm ncl market-documents list --market-id <MARKET_ID> --compact --json
@@ -182,7 +182,7 @@ Create a local JSON payload with typed candidates. Each candidate must include e
 
 Valid candidate types are `company`, `product`, `problem`, `capability`, `category`, and `claim`. Valid confidence values are `low`, `medium`, and `high`.
 
-Import candidates in batch:
+Import candidates in batch. Use `--dedupe` by default for agent-generated extraction payloads so repeated extraction runs do not create duplicate candidates:
 
 ```bash
 pnpm ncl market-candidates import \
@@ -208,6 +208,32 @@ Use single-candidate review when a batch is not appropriate:
 pnpm ncl market-candidates review <CANDIDATE_ID> --status accepted --review-note "Evidence supports this." --json
 ```
 
+If the user wants to review candidates with the assistant:
+
+1. Start with candidate counts:
+
+```bash
+pnpm ncl market-candidates summary --market-id <MARKET_ID> --json
+```
+
+2. Review candidates in small batches by type:
+
+```bash
+pnpm ncl market-candidates list --market-id <MARKET_ID> --status proposed --type capability --compact --json
+```
+
+3. Present names, summaries, confidence, and a recommendation. Wait for the user's decision.
+4. Apply decisions with `market-candidates review-batch`.
+5. Repeat for categories/problems, companies, products, and claims.
+6. Verify final counts with `market-candidates summary`.
+
+Suggested review notes:
+
+- Capabilities: `Accepted by user review: capability matches market boundary.`
+- Companies/products: `Accepted by user review: <type> is in scope for the market.`
+- Vendor claims: `Accepted by user review as vendor-reported claim; not independently verified.`
+- Broad platforms: `Accepted by user review: product includes in-scope capability; <adjacent feature> is adjacent to the market boundary.`
+
 Report:
 
 - extraction run id
@@ -229,7 +255,7 @@ Implemented:
 - evidence-backed market candidate import/list/get/review
 - compact document and candidate listing
 - candidate summary and batch review
-- market run audit rows for collection
+- market run audit rows for collection and extraction
 
 Not implemented yet:
 
