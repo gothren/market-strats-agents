@@ -354,7 +354,14 @@ describe('market sources CLI resource', () => {
       });
     }
 
-    expect(fetch).toHaveBeenCalledWith('https://example.com/vendor', expect.any(Object));
+    expect(fetch).toHaveBeenCalledWith('https://example.com/vendor', {
+      headers: expect.objectContaining({
+        Accept: expect.stringContaining('text/html'),
+        'Accept-Language': expect.stringContaining('en-US'),
+        'User-Agent': expect.stringContaining('Mozilla/5.0'),
+      }),
+      redirect: 'follow',
+    });
   });
 
   it('records failed exact_url collection attempts instead of silently dropping them', async () => {

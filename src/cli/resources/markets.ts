@@ -23,6 +23,12 @@ import { createHash } from 'node:crypto';
 
 const SOURCE_TYPES = ['website', 'docs', 'blog', 'rss', 'search_query', 'slack', 'exact_url', 'manual'] as const;
 const TRUST_TIERS = ['official', 'trusted', 'third_party', 'search', 'private'] as const;
+const EXACT_URL_FETCH_HEADERS = {
+  Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.7',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'User-Agent':
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36',
+};
 
 function str(value: unknown, name: string): string {
   if (typeof value !== 'string' || value.trim() === '') {
@@ -199,7 +205,7 @@ async function collectExactUrl(
   run: MarketRun,
 ): Promise<{ document: MarketDocument; failed: boolean }> {
   try {
-    const response = await fetch(source.url, { redirect: 'follow' });
+    const response = await fetch(source.url, { headers: EXACT_URL_FETCH_HEADERS, redirect: 'follow' });
     const contentType = response.headers.get('content-type');
     if (!response.ok) {
       const document = createMarketDocument({
