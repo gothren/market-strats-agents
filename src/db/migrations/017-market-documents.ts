@@ -67,7 +67,7 @@ export const migration017: Migration = {
           id           TEXT PRIMARY KEY,
           market_id    TEXT NOT NULL,
           source_id    TEXT,
-          kind         TEXT NOT NULL CHECK (kind IN ('setup', 'collection', 'brief')),
+          kind         TEXT NOT NULL CHECK (kind IN ('setup', 'collection', 'extraction', 'brief')),
           status       TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
           started_at   TEXT NOT NULL,
           completed_at TEXT,

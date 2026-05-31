@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { initTestDb, closeDb, runMigrations } from '../../db/index.js';
 import { dispatch } from '../dispatch.js';
@@ -15,6 +18,13 @@ afterEach(() => {
 
 async function registerMarketsResource(): Promise<void> {
   await import('./markets.js');
+}
+
+function writePayload(payload: unknown): string {
+  const dir = mkdtempSync(join(tmpdir(), 'market-candidates-'));
+  const file = join(dir, 'payload.json');
+  writeFileSync(file, JSON.stringify(payload), 'utf8');
+  return file;
 }
 
 describe('markets CLI resource', () => {
@@ -634,6 +644,250 @@ describe('market documents CLI resource', () => {
     if (!resp.ok) {
       expect(resp.error.code).toBe('invalid-args');
       expect(resp.error.message).toMatch(/market_id/i);
+    }
+  });
+});
+
+describe('market candidates CLI resource', () => {
+  async function createDocumentFixture() {
+    await registerMarketsResource();
+
+    const created = await dispatch(
+      {
+        id: 'req-create-market',
+        command: 'markets-create',
+        args: { name: `AI Security ${Math.random()}`, description: null },
+      },
+      { caller: 'host' },
+    );
+    expect(created.ok).toBe(true);
+    const marketId = (created as { ok: true; data: { market: { id: string } } }).data.market.id;
+
+    const added = await dispatch(
+      {
+        id: 'req-source-add',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: `https://example.com/vendor-${Math.random()}`,
+          source_type: 'exact_url',
+          trust_tier: 'official',
+        },
+      },
+      { caller: 'host' },
+    );
+    expect(added.ok).toBe(true);
+
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(
+            '<html><head><title>Vendor homepage</title></head><body>Vendor protects AI applications from prompt injection.</body></html>',
+            { status: 200, headers: { 'content-type': 'text/html' } },
+          ),
+        ),
+    );
+
+    const collected = await dispatch(
+      { id: 'req-sources-collect', command: 'market-sources-collect', args: { market_id: marketId } },
+      { caller: 'host' },
+    );
+    expect(collected.ok).toBe(true);
+    const documentId = (collected as { ok: true; data: { documents: Array<{ id: string }> } }).data.documents[0].id;
+
+    return { marketId, documentId };
+  }
+
+  it('imports typed extraction candidates from a batch JSON payload file', async () => {
+    const { marketId, documentId } = await createDocumentFixture();
+    const payloadFile = writePayload({
+      document_ids: [documentId],
+      candidates: [
+        {
+          candidate_type: 'company',
+          name: 'Example Vendor',
+          summary: 'Provides runtime protection for AI applications.',
+          confidence: 'medium',
+          evidence: [
+            {
+              document_id: documentId,
+              quote: 'Vendor protects AI applications from prompt injection.',
+              note: 'Vendor positioning statement',
+            },
+          ],
+          metadata: { source: 'agent-extraction' },
+        },
+      ],
+    });
+
+    const imported = await dispatch(
+      {
+        id: 'req-candidates-import',
+        command: 'market-candidates-import',
+        args: { market_id: marketId, 'payload-file': payloadFile },
+      },
+      { caller: 'host' },
+    );
+
+    expect(imported.ok).toBe(true);
+    if (imported.ok) {
+      expect(imported.data).toMatchObject({
+        run: {
+          market_id: marketId,
+          kind: 'extraction',
+          status: 'completed',
+        },
+        summary: {
+          imported: 1,
+          by_type: { company: 1 },
+          by_confidence: { medium: 1 },
+        },
+        candidates: [
+          {
+            market_id: marketId,
+            candidate_type: 'company',
+            name: 'Example Vendor',
+            confidence: 'medium',
+            status: 'proposed',
+          },
+        ],
+        next_actions: expect.arrayContaining([expect.stringContaining('market-candidates list')]),
+      });
+    }
+  });
+
+  it('rejects candidate import when evidence is missing', async () => {
+    const { marketId } = await createDocumentFixture();
+    const payloadFile = writePayload({
+      candidates: [
+        {
+          candidate_type: 'company',
+          name: 'Unsupported Vendor',
+          confidence: 'low',
+          evidence: [],
+        },
+      ],
+    });
+
+    const imported = await dispatch(
+      {
+        id: 'req-candidates-import-missing-evidence',
+        command: 'market-candidates-import',
+        args: { market_id: marketId, 'payload-file': payloadFile },
+      },
+      { caller: 'host' },
+    );
+
+    expect(imported.ok).toBe(false);
+    if (!imported.ok) {
+      expect(imported.error.code).toBe('handler-error');
+      expect(imported.error.message).toMatch(/evidence/i);
+    }
+  });
+
+  it('rejects candidate import with cross-market evidence', async () => {
+    const { marketId } = await createDocumentFixture();
+    const other = await createDocumentFixture();
+    const payloadFile = writePayload({
+      candidates: [
+        {
+          candidate_type: 'company',
+          name: 'Cross Market Vendor',
+          confidence: 'low',
+          evidence: [{ document_id: other.documentId, quote: 'Other market evidence', note: null }],
+        },
+      ],
+    });
+
+    const imported = await dispatch(
+      {
+        id: 'req-candidates-import-cross-market',
+        command: 'market-candidates-import',
+        args: { market_id: marketId, 'payload-file': payloadFile },
+      },
+      { caller: 'host' },
+    );
+
+    expect(imported.ok).toBe(false);
+    if (!imported.ok) {
+      expect(imported.error.code).toBe('handler-error');
+      expect(imported.error.message).toMatch(/document.*market/i);
+    }
+  });
+
+  it('lists, gets, and reviews imported candidates', async () => {
+    const { marketId, documentId } = await createDocumentFixture();
+    const payloadFile = writePayload({
+      candidates: [
+        {
+          candidate_type: 'capability',
+          name: 'Prompt injection detection',
+          summary: 'Detects and blocks prompt injection attempts.',
+          confidence: 'high',
+          evidence: [{ document_id: documentId, quote: 'prompt injection', note: null }],
+        },
+      ],
+    });
+
+    const imported = await dispatch(
+      {
+        id: 'req-candidates-import-review',
+        command: 'market-candidates-import',
+        args: { market_id: marketId, 'payload-file': payloadFile },
+      },
+      { caller: 'host' },
+    );
+    expect(imported.ok).toBe(true);
+    const candidateId = (imported as { ok: true; data: { candidates: Array<{ id: string }> } }).data.candidates[0].id;
+
+    const listed = await dispatch(
+      { id: 'req-candidates-list', command: 'market-candidates-list', args: { market_id: marketId } },
+      { caller: 'host' },
+    );
+    expect(listed.ok).toBe(true);
+    if (listed.ok) {
+      expect(listed.data).toMatchObject({
+        candidates: [{ id: candidateId, candidate_type: 'capability', status: 'proposed' }],
+        next_actions: expect.arrayContaining([expect.stringContaining('market-candidates get')]),
+      });
+    }
+
+    const got = await dispatch(
+      { id: 'req-candidates-get', command: 'market-candidates-get', args: { id: candidateId } },
+      { caller: 'host' },
+    );
+    expect(got.ok).toBe(true);
+    if (got.ok) {
+      expect(got.data).toMatchObject({
+        candidate: {
+          id: candidateId,
+          market_id: marketId,
+          name: 'Prompt injection detection',
+          evidence: [{ document_id: documentId, quote: 'prompt injection', note: null }],
+        },
+      });
+    }
+
+    const reviewed = await dispatch(
+      {
+        id: 'req-candidates-review',
+        command: 'market-candidates-review',
+        args: { id: candidateId, status: 'accepted', 'review-note': 'Evidence supports this capability.' },
+      },
+      { caller: 'host' },
+    );
+    expect(reviewed.ok).toBe(true);
+    if (reviewed.ok) {
+      expect(reviewed.data).toMatchObject({
+        candidate: {
+          id: candidateId,
+          status: 'accepted',
+          review_note: 'Evidence supports this capability.',
+          reviewed_at: expect.any(String),
+        },
+      });
     }
   });
 });

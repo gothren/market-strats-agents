@@ -45,7 +45,7 @@ export const migration016: Migration = {
         id           TEXT PRIMARY KEY,
         market_id    TEXT NOT NULL,
         source_id    TEXT,
-        kind         TEXT NOT NULL CHECK (kind IN ('setup', 'collection', 'brief')),
+        kind         TEXT NOT NULL CHECK (kind IN ('setup', 'collection', 'extraction', 'brief')),
         status       TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
         started_at   TEXT NOT NULL,
         completed_at TEXT,
@@ -79,6 +79,29 @@ export const migration016: Migration = {
       CREATE INDEX idx_market_documents_market_created ON market_documents(market_id, created_at DESC);
       CREATE INDEX idx_market_documents_source ON market_documents(source_id, created_at DESC);
       CREATE INDEX idx_market_documents_run ON market_documents(run_id);
+
+      CREATE TABLE market_candidates (
+        id              TEXT PRIMARY KEY,
+        market_id       TEXT NOT NULL,
+        run_id          TEXT,
+        candidate_type  TEXT NOT NULL CHECK (candidate_type IN ('company', 'product', 'problem', 'capability', 'category', 'claim')),
+        name            TEXT NOT NULL,
+        summary         TEXT,
+        confidence      TEXT NOT NULL CHECK (confidence IN ('low', 'medium', 'high')),
+        status          TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed', 'accepted', 'rejected')),
+        evidence_json   TEXT NOT NULL,
+        metadata_json   TEXT,
+        review_note     TEXT,
+        created_at      TEXT NOT NULL,
+        updated_at      TEXT NOT NULL,
+        reviewed_at     TEXT,
+        FOREIGN KEY (market_id) REFERENCES markets(id) ON DELETE CASCADE,
+        FOREIGN KEY (run_id) REFERENCES market_runs(id) ON DELETE SET NULL
+      );
+
+      CREATE INDEX idx_market_candidates_market_created ON market_candidates(market_id, created_at DESC);
+      CREATE INDEX idx_market_candidates_run ON market_candidates(run_id);
+      CREATE INDEX idx_market_candidates_status ON market_candidates(market_id, status, created_at DESC);
     `);
   },
 };

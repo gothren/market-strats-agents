@@ -140,6 +140,69 @@ Report:
 
 Current collection support is intentionally narrow. Only `exact_url` sources are fetched. Other valid source types such as `docs`, `website`, `blog`, `rss`, `search_query`, `slack`, and `manual` should be reported as unsupported for collection v1, not treated as exact URLs.
 
+## Extracting And Reviewing Market Candidates
+
+If the user says "extract findings", "analyze fetched evidence", or "find companies/problems/capabilities", interpret it as product operation, not code implementation.
+
+First inspect stored documents:
+
+```bash
+pnpm ncl market-documents list --market-id <MARKET_ID> --json
+pnpm ncl market-documents get <DOCUMENT_ID> --json
+```
+
+Create a local JSON payload with typed candidates. Each candidate must include evidence linked to stored document ids:
+
+```json
+{
+  "candidates": [
+    {
+      "candidate_type": "company",
+      "name": "Example Vendor",
+      "summary": "Provides runtime protection for AI applications.",
+      "confidence": "medium",
+      "evidence": [
+        {
+          "document_id": "mdoc_...",
+          "quote": "short supporting excerpt",
+          "note": "Vendor positioning statement"
+        }
+      ],
+      "metadata": {}
+    }
+  ]
+}
+```
+
+Valid candidate types are `company`, `product`, `problem`, `capability`, `category`, and `claim`. Valid confidence values are `low`, `medium`, and `high`.
+
+Import candidates in batch:
+
+```bash
+pnpm ncl market-candidates import \
+  --market-id <MARKET_ID> \
+  --payload-file <JSON_FILE> \
+  --json
+```
+
+Review candidates:
+
+```bash
+pnpm ncl market-candidates list --market-id <MARKET_ID> --json
+pnpm ncl market-candidates get <CANDIDATE_ID> --json
+pnpm ncl market-candidates review <CANDIDATE_ID> --status accepted --review-note "Evidence supports this." --json
+pnpm ncl market-candidates review <CANDIDATE_ID> --status rejected --review-note "Unsupported by evidence." --json
+```
+
+Report:
+
+- extraction run id
+- candidate counts by type
+- confidence distribution
+- candidates that need user review
+
+Do not create accepted facts directly from documents. Imported extraction output starts as reviewable candidates.
+
 ## Current Market Capability
 
 Implemented:
@@ -149,13 +212,14 @@ Implemented:
 - market source add/list
 - exact URL source collection
 - market document storage/list/get
+- evidence-backed market candidate import/list/get/review
 - market run audit rows for collection
 
 Not implemented yet:
 
 - crawling for docs/websites/blogs
 - RSS/search/Slack/manual connectors
-- evidence extraction
+- internal LLM extraction
 - companies/products/categories
 - structured review workflow
 - market reports

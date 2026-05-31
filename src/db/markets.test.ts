@@ -17,13 +17,14 @@ describe('market core schema', () => {
       .prepare(
         `SELECT name FROM sqlite_master
          WHERE type = 'table'
-           AND name IN ('markets', 'market_boundaries', 'market_sources', 'market_runs', 'market_documents')
+           AND name IN ('markets', 'market_boundaries', 'market_sources', 'market_runs', 'market_documents', 'market_candidates')
          ORDER BY name`,
       )
       .all() as Array<{ name: string }>;
 
     expect(rows.map((row) => row.name)).toEqual([
       'market_boundaries',
+      'market_candidates',
       'market_documents',
       'market_runs',
       'market_sources',
@@ -79,9 +80,158 @@ describe('market core schema', () => {
     getDb().prepare('DELETE FROM markets WHERE id = ?').run(market.id);
 
     expect(getDb().prepare('SELECT COUNT(*) AS c FROM market_boundaries').get()).toMatchObject({ c: 0 });
+    expect(getDb().prepare('SELECT COUNT(*) AS c FROM market_candidates').get()).toMatchObject({ c: 0 });
     expect(getDb().prepare('SELECT COUNT(*) AS c FROM market_documents').get()).toMatchObject({ c: 0 });
     expect(getDb().prepare('SELECT COUNT(*) AS c FROM market_sources').get()).toMatchObject({ c: 0 });
     expect(getDb().prepare('SELECT COUNT(*) AS c FROM market_runs').get()).toMatchObject({ c: 0 });
+  });
+});
+
+describe('market candidate db helpers', () => {
+  async function createFetchedDocument() {
+    const marketDb = await import('./markets.js');
+    const market = marketDb.createMarket({ name: `AI Security ${Math.random()}`, description: null });
+    const source = marketDb.addMarketSource({
+      market_id: market.id,
+      url: `https://example.com/vendor-${Math.random()}`,
+      source_type: 'exact_url',
+      trust_tier: 'official',
+      notes: 'Vendor homepage',
+    });
+    const run = marketDb.createMarketRun({
+      market_id: market.id,
+      source_id: source.id,
+      kind: 'collection',
+      status: 'completed',
+      summary: null,
+    });
+    const document = marketDb.createMarketDocument({
+      market_id: market.id,
+      source_id: source.id,
+      run_id: run.id,
+      url: source.url,
+      canonical_url: source.url,
+      title: 'Vendor homepage',
+      content_text: 'Vendor protects AI applications from prompt injection.',
+      content_hash: 'sha256:vendor-homepage',
+      status: 'fetched',
+      error: null,
+      metadata_json: JSON.stringify({ content_type: 'text/html' }),
+    });
+
+    return { marketDb, market, document };
+  }
+
+  it('stores typed proposed candidates with evidence links to market documents', async () => {
+    const { marketDb, market, document } = await createFetchedDocument();
+    const run = marketDb.createMarketRun({
+      market_id: market.id,
+      source_id: null,
+      kind: 'extraction',
+      status: 'completed',
+      summary: null,
+    });
+
+    const candidate = marketDb.createMarketCandidate({
+      market_id: market.id,
+      run_id: run.id,
+      candidate_type: 'company',
+      name: 'Example Vendor',
+      summary: 'Provides runtime protection for AI applications.',
+      confidence: 'medium',
+      evidence: [
+        {
+          document_id: document.id,
+          quote: 'Vendor protects AI applications from prompt injection.',
+          note: 'Vendor positioning statement',
+        },
+      ],
+      metadata: { source: 'agent-extraction' },
+    });
+
+    expect(candidate).toMatchObject({
+      market_id: market.id,
+      run_id: run.id,
+      candidate_type: 'company',
+      name: 'Example Vendor',
+      summary: 'Provides runtime protection for AI applications.',
+      confidence: 'medium',
+      status: 'proposed',
+      review_note: null,
+      reviewed_at: null,
+    });
+    expect(candidate.id).toMatch(/^mcand_/);
+    expect(JSON.parse(candidate.evidence_json)).toEqual([
+      {
+        document_id: document.id,
+        quote: 'Vendor protects AI applications from prompt injection.',
+        note: 'Vendor positioning statement',
+      },
+    ]);
+    expect(JSON.parse(candidate.metadata_json!)).toEqual({ source: 'agent-extraction' });
+    expect(marketDb.getMarketCandidate(candidate.id)).toEqual(candidate);
+    expect(marketDb.listMarketCandidates(market.id)).toEqual([candidate]);
+  });
+
+  it('requires candidate evidence so extracted intelligence is not unsupported', async () => {
+    const { marketDb, market } = await createFetchedDocument();
+
+    expect(() =>
+      marketDb.createMarketCandidate({
+        market_id: market.id,
+        run_id: null,
+        candidate_type: 'company',
+        name: 'Unsupported Vendor',
+        summary: null,
+        confidence: 'low',
+        evidence: [],
+        metadata: null,
+      }),
+    ).toThrow(/evidence/i);
+  });
+
+  it('rejects evidence documents from a different market', async () => {
+    const { marketDb, market } = await createFetchedDocument();
+    const other = await createFetchedDocument();
+
+    expect(() =>
+      marketDb.createMarketCandidate({
+        market_id: market.id,
+        run_id: null,
+        candidate_type: 'company',
+        name: 'Cross Market Vendor',
+        summary: null,
+        confidence: 'low',
+        evidence: [{ document_id: other.document.id, quote: 'Other market evidence', note: null }],
+        metadata: null,
+      }),
+    ).toThrow(/document.*market/i);
+  });
+
+  it('reviews candidates by updating status, note, and reviewed timestamp', async () => {
+    const { marketDb, market, document } = await createFetchedDocument();
+    const candidate = marketDb.createMarketCandidate({
+      market_id: market.id,
+      run_id: null,
+      candidate_type: 'capability',
+      name: 'Prompt injection detection',
+      summary: 'Detects and blocks prompt injection attempts.',
+      confidence: 'high',
+      evidence: [{ document_id: document.id, quote: 'prompt injection', note: null }],
+      metadata: null,
+    });
+
+    const reviewed = marketDb.reviewMarketCandidate(candidate.id, {
+      status: 'accepted',
+      review_note: 'Evidence supports this capability.',
+    });
+
+    expect(reviewed).toMatchObject({
+      id: candidate.id,
+      status: 'accepted',
+      review_note: 'Evidence supports this capability.',
+      reviewed_at: expect.any(String),
+    });
   });
 });
 

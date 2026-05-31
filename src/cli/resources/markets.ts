@@ -1,17 +1,26 @@
 import {
   addMarketSource,
   completeMarketRun,
+  createMarketCandidate,
   createMarketDocument,
   createMarket,
   createMarketRun,
   getLatestMarketRun,
   getMarket,
   getMarketBoundary,
+  getMarketCandidate,
   getMarketDocument,
+  listMarketCandidates,
   listMarketDocuments,
   listMarketSources,
   listMarkets,
+  reviewMarketCandidate,
   upsertMarketBoundary,
+  type MarketCandidate,
+  type MarketCandidateConfidence,
+  type MarketCandidateEvidence,
+  type MarketCandidateStatus,
+  type MarketCandidateType,
   type MarketDocument,
   type MarketRun,
   type MarketSource,
@@ -20,9 +29,13 @@ import {
 } from '../../db/markets.js';
 import { register } from '../registry.js';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 
 const SOURCE_TYPES = ['website', 'docs', 'blog', 'rss', 'search_query', 'slack', 'exact_url', 'manual'] as const;
 const TRUST_TIERS = ['official', 'trusted', 'third_party', 'search', 'private'] as const;
+const CANDIDATE_TYPES = ['company', 'product', 'problem', 'capability', 'category', 'claim'] as const;
+const CANDIDATE_CONFIDENCES = ['low', 'medium', 'high'] as const;
+const CANDIDATE_STATUSES = ['proposed', 'accepted', 'rejected'] as const;
 const EXACT_URL_FETCH_HEADERS = {
   Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.7',
   'Accept-Language': 'en-US,en;q=0.9',
@@ -41,6 +54,12 @@ function str(value: unknown, name: string): string {
 function nullableStr(value: unknown): string | null {
   if (value === undefined || value === null) return null;
   return String(value);
+}
+
+function optionalStr(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  const text = String(value).trim();
+  return text === '' ? null : text;
 }
 
 function optionalEnum<T extends readonly string[]>(
@@ -368,6 +387,192 @@ register({
     return {
       document,
       next_actions: [`ncl markets get ${document.market_id}`],
+    };
+  },
+});
+
+interface CandidatePayloadItem {
+  candidate_type: MarketCandidateType;
+  name: string;
+  summary: string | null;
+  confidence: MarketCandidateConfidence;
+  evidence: MarketCandidateEvidence[];
+  metadata: unknown;
+}
+
+function parseJsonFile(path: string): unknown {
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'));
+  } catch (e) {
+    throw new Error(`could not read JSON payload file: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+function asRecord(value: unknown, name: string): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${name} must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function normalizeEvidence(value: unknown): MarketCandidateEvidence[] {
+  if (!Array.isArray(value)) {
+    throw new Error('candidate evidence must be an array');
+  }
+  return value.map((item, index) => {
+    const record = asRecord(item, `candidate evidence ${index}`);
+    return {
+      document_id: str(record.document_id, 'document_id'),
+      quote: optionalStr(record.quote),
+      note: optionalStr(record.note),
+    };
+  });
+}
+
+function normalizeCandidate(value: unknown, index: number): CandidatePayloadItem {
+  const record = asRecord(value, `candidate ${index}`);
+  return {
+    candidate_type: requiredEnum(record.candidate_type, CANDIDATE_TYPES, 'candidate_type') as MarketCandidateType,
+    name: str(record.name, 'name'),
+    summary: nullableStr(record.summary),
+    confidence: requiredEnum(record.confidence, CANDIDATE_CONFIDENCES, 'confidence') as MarketCandidateConfidence,
+    evidence: normalizeEvidence(record.evidence),
+    metadata: record.metadata ?? null,
+  };
+}
+
+function parseCandidatePayload(path: string): CandidatePayloadItem[] {
+  const payload = asRecord(parseJsonFile(path), 'candidate payload');
+  if (!Array.isArray(payload.candidates)) {
+    throw new Error('candidate payload candidates must be an array');
+  }
+  return payload.candidates.map((candidate, index) => normalizeCandidate(candidate, index));
+}
+
+function candidateWithParsedJson(candidate: MarketCandidate) {
+  return {
+    ...candidate,
+    evidence: JSON.parse(candidate.evidence_json) as MarketCandidateEvidence[],
+    metadata: candidate.metadata_json ? (JSON.parse(candidate.metadata_json) as unknown) : null,
+  };
+}
+
+function countBy<T extends string>(values: T[]): Record<T, number> {
+  return values.reduce(
+    (acc, value) => {
+      acc[value] = (acc[value] ?? 0) + 1;
+      return acc;
+    },
+    {} as Record<T, number>,
+  );
+}
+
+register({
+  name: 'market-candidates-import',
+  description: 'Import evidence-backed extraction candidates from a batch JSON payload file.',
+  resource: 'market-candidates',
+  access: 'open',
+  parseArgs: (raw) => ({
+    market_id: str(raw.market_id ?? raw['market-id'], 'market_id'),
+    payload_file: str(raw.payload_file ?? raw['payload-file'], 'payload_file'),
+  }),
+  handler: async (args) => {
+    const market = getMarket(args.market_id);
+    if (!market) throw new Error(`market not found: ${args.market_id}`);
+
+    const candidates = parseCandidatePayload(args.payload_file);
+    const run = createMarketRun({
+      market_id: args.market_id,
+      source_id: null,
+      kind: 'extraction',
+      status: 'running',
+      summary: null,
+    });
+
+    try {
+      const imported = candidates.map((candidate) =>
+        createMarketCandidate({
+          market_id: args.market_id,
+          run_id: run.id,
+          candidate_type: candidate.candidate_type,
+          name: candidate.name,
+          summary: candidate.summary,
+          confidence: candidate.confidence,
+          evidence: candidate.evidence,
+          metadata: candidate.metadata,
+        }),
+      );
+      const summary = {
+        imported: imported.length,
+        by_type: countBy(imported.map((candidate) => candidate.candidate_type)),
+        by_confidence: countBy(imported.map((candidate) => candidate.confidence)),
+      };
+      const completed = completeMarketRun(run.id, { status: 'completed', summary: JSON.stringify(summary) });
+      return {
+        run: completed,
+        summary,
+        candidates: imported.map(candidateWithParsedJson),
+        next_actions: [`ncl market-candidates list --market-id ${args.market_id}`, `ncl markets get ${args.market_id}`],
+      };
+    } catch (e) {
+      completeMarketRun(run.id, {
+        status: 'failed',
+        summary: JSON.stringify({ error: e instanceof Error ? e.message : String(e) }),
+      });
+      throw e;
+    }
+  },
+});
+
+register({
+  name: 'market-candidates-list',
+  description: 'List evidence-backed extraction candidates for a market.',
+  resource: 'market-candidates',
+  access: 'open',
+  parseArgs: (raw) => ({ market_id: str(raw.market_id ?? raw['market-id'], 'market_id') }),
+  handler: async (args) => ({
+    candidates: listMarketCandidates(args.market_id).map(candidateWithParsedJson),
+    next_actions: [`ncl market-candidates get <CANDIDATE_ID>`, `ncl markets get ${args.market_id}`],
+  }),
+});
+
+register({
+  name: 'market-candidates-get',
+  description: 'Get one evidence-backed extraction candidate.',
+  resource: 'market-candidates',
+  access: 'open',
+  parseArgs: (raw) => ({ id: str(raw.id, 'id') }),
+  handler: async (args) => {
+    const candidate = getMarketCandidate(args.id);
+    if (!candidate) throw new Error(`market candidate not found: ${args.id}`);
+    return {
+      candidate: candidateWithParsedJson(candidate),
+      next_actions: [
+        `ncl market-candidates review ${candidate.id} --status accepted --review-note "..."`,
+        `ncl markets get ${candidate.market_id}`,
+      ],
+    };
+  },
+});
+
+register({
+  name: 'market-candidates-review',
+  description: 'Update review status for one extraction candidate.',
+  resource: 'market-candidates',
+  access: 'open',
+  parseArgs: (raw) => ({
+    id: str(raw.id, 'id'),
+    status: requiredEnum(raw.status, CANDIDATE_STATUSES, 'status') as MarketCandidateStatus,
+    review_note: nullableStr(raw.review_note ?? raw['review-note']),
+  }),
+  handler: async (args) => {
+    const candidate = reviewMarketCandidate(args.id, {
+      status: args.status,
+      review_note: args.review_note,
+    });
+    return {
+      candidate: candidateWithParsedJson(candidate),
+      next_actions: [`ncl market-candidates list --market-id ${candidate.market_id}`],
     };
   },
 });

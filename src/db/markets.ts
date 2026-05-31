@@ -12,9 +12,12 @@ export type MarketSourceType =
   | 'exact_url'
   | 'manual';
 export type MarketSourceTrustTier = 'official' | 'trusted' | 'third_party' | 'search' | 'private';
-export type MarketRunKind = 'setup' | 'collection' | 'brief';
+export type MarketRunKind = 'setup' | 'collection' | 'extraction' | 'brief';
 export type MarketRunStatus = 'running' | 'completed' | 'failed';
 export type MarketDocumentStatus = 'fetched' | 'failed' | 'skipped';
+export type MarketCandidateType = 'company' | 'product' | 'problem' | 'capability' | 'category' | 'claim';
+export type MarketCandidateConfidence = 'low' | 'medium' | 'high';
+export type MarketCandidateStatus = 'proposed' | 'accepted' | 'rejected';
 
 export interface Market {
   id: string;
@@ -72,6 +75,29 @@ export interface MarketDocument {
   fetched_at: string;
   created_at: string;
   metadata_json: string | null;
+}
+
+export interface MarketCandidateEvidence {
+  document_id: string;
+  quote?: string | null;
+  note?: string | null;
+}
+
+export interface MarketCandidate {
+  id: string;
+  market_id: string;
+  run_id: string | null;
+  candidate_type: MarketCandidateType;
+  name: string;
+  summary: string | null;
+  confidence: MarketCandidateConfidence;
+  status: MarketCandidateStatus;
+  evidence_json: string;
+  metadata_json: string | null;
+  review_note: string | null;
+  created_at: string;
+  updated_at: string;
+  reviewed_at: string | null;
 }
 
 function now(): string {
@@ -336,4 +362,141 @@ export function listMarketDocuments(marketId: string): MarketDocument[] {
   return getDb()
     .prepare('SELECT * FROM market_documents WHERE market_id = ? ORDER BY created_at DESC, id DESC')
     .all(marketId) as MarketDocument[];
+}
+
+const MARKET_CANDIDATE_TYPES: MarketCandidateType[] = [
+  'company',
+  'product',
+  'problem',
+  'capability',
+  'category',
+  'claim',
+];
+const MARKET_CANDIDATE_CONFIDENCES: MarketCandidateConfidence[] = ['low', 'medium', 'high'];
+const MARKET_CANDIDATE_STATUSES: MarketCandidateStatus[] = ['proposed', 'accepted', 'rejected'];
+
+function assertCandidateEvidence(marketId: string, evidence: MarketCandidateEvidence[]): void {
+  if (!Array.isArray(evidence) || evidence.length === 0) {
+    throw new Error('candidate evidence must include at least one market document');
+  }
+
+  for (const item of evidence) {
+    if (!item || typeof item.document_id !== 'string' || item.document_id.trim() === '') {
+      throw new Error('candidate evidence document_id is required');
+    }
+    const document = getMarketDocument(item.document_id);
+    if (!document) {
+      throw new Error(`candidate evidence document not found: ${item.document_id}`);
+    }
+    if (document.market_id !== marketId) {
+      throw new Error(`candidate evidence document belongs to a different market: ${item.document_id}`);
+    }
+  }
+}
+
+function assertCandidateEnums(input: {
+  candidate_type: MarketCandidateType;
+  confidence: MarketCandidateConfidence;
+  status?: MarketCandidateStatus;
+}): void {
+  if (!MARKET_CANDIDATE_TYPES.includes(input.candidate_type)) {
+    throw new Error(`candidate_type must be one of: ${MARKET_CANDIDATE_TYPES.join(', ')}`);
+  }
+  if (!MARKET_CANDIDATE_CONFIDENCES.includes(input.confidence)) {
+    throw new Error(`confidence must be one of: ${MARKET_CANDIDATE_CONFIDENCES.join(', ')}`);
+  }
+  if (input.status && !MARKET_CANDIDATE_STATUSES.includes(input.status)) {
+    throw new Error(`status must be one of: ${MARKET_CANDIDATE_STATUSES.join(', ')}`);
+  }
+}
+
+export function createMarketCandidate(input: {
+  market_id: string;
+  run_id?: string | null;
+  candidate_type: MarketCandidateType;
+  name: string;
+  summary?: string | null;
+  confidence: MarketCandidateConfidence;
+  status?: MarketCandidateStatus;
+  evidence: MarketCandidateEvidence[];
+  metadata?: unknown;
+}): MarketCandidate {
+  assertCandidateEnums(input);
+  assertCandidateEvidence(input.market_id, input.evidence);
+
+  if (input.run_id) {
+    const run = getDb().prepare('SELECT * FROM market_runs WHERE id = ?').get(input.run_id) as MarketRun | undefined;
+    if (!run) throw new Error(`market run not found: ${input.run_id}`);
+    if (run.market_id !== input.market_id) {
+      throw new Error(`candidate run belongs to a different market: ${input.run_id}`);
+    }
+  }
+
+  const at = now();
+  const candidate: MarketCandidate = {
+    id: id('mcand'),
+    market_id: input.market_id,
+    run_id: input.run_id ?? null,
+    candidate_type: input.candidate_type,
+    name: input.name,
+    summary: input.summary ?? null,
+    confidence: input.confidence,
+    status: input.status ?? 'proposed',
+    evidence_json: JSON.stringify(input.evidence),
+    metadata_json: input.metadata === undefined || input.metadata === null ? null : JSON.stringify(input.metadata),
+    review_note: null,
+    created_at: at,
+    updated_at: at,
+    reviewed_at: null,
+  };
+
+  getDb()
+    .prepare(
+      `INSERT INTO market_candidates
+         (id, market_id, run_id, candidate_type, name, summary, confidence, status, evidence_json, metadata_json, review_note, created_at, updated_at, reviewed_at)
+       VALUES
+         (@id, @market_id, @run_id, @candidate_type, @name, @summary, @confidence, @status, @evidence_json, @metadata_json, @review_note, @created_at, @updated_at, @reviewed_at)`,
+    )
+    .run(candidate);
+
+  return candidate;
+}
+
+export function getMarketCandidate(id: string): MarketCandidate | undefined {
+  return getDb().prepare('SELECT * FROM market_candidates WHERE id = ?').get(id) as MarketCandidate | undefined;
+}
+
+export function listMarketCandidates(marketId: string): MarketCandidate[] {
+  return getDb()
+    .prepare('SELECT * FROM market_candidates WHERE market_id = ? ORDER BY created_at DESC, id DESC')
+    .all(marketId) as MarketCandidate[];
+}
+
+export function reviewMarketCandidate(
+  id: string,
+  input: { status: MarketCandidateStatus; review_note?: string | null },
+): MarketCandidate {
+  if (!MARKET_CANDIDATE_STATUSES.includes(input.status)) {
+    throw new Error(`status must be one of: ${MARKET_CANDIDATE_STATUSES.join(', ')}`);
+  }
+
+  const result = getDb()
+    .prepare(
+      `UPDATE market_candidates
+       SET status = @status,
+           review_note = @review_note,
+           updated_at = @updated_at,
+           reviewed_at = @reviewed_at
+       WHERE id = @id`,
+    )
+    .run({
+      id,
+      status: input.status,
+      review_note: input.review_note ?? null,
+      updated_at: now(),
+      reviewed_at: now(),
+    });
+  if (result.changes === 0) throw new Error(`market candidate not found: ${id}`);
+
+  return getMarketCandidate(id)!;
 }
