@@ -17,12 +17,18 @@ describe('market core schema', () => {
       .prepare(
         `SELECT name FROM sqlite_master
          WHERE type = 'table'
-           AND name IN ('markets', 'market_boundaries', 'market_sources', 'market_runs')
+           AND name IN ('markets', 'market_boundaries', 'market_sources', 'market_runs', 'market_documents')
          ORDER BY name`,
       )
       .all() as Array<{ name: string }>;
 
-    expect(rows.map((row) => row.name)).toEqual(['market_boundaries', 'market_runs', 'market_sources', 'markets']);
+    expect(rows.map((row) => row.name)).toEqual([
+      'market_boundaries',
+      'market_documents',
+      'market_runs',
+      'market_sources',
+      'markets',
+    ]);
   });
 
   it('cascades market-owned evidence and run data when a market is deleted', async () => {
@@ -40,24 +46,40 @@ describe('market core schema', () => {
       notes: 'Initial analyst boundary',
     });
 
-    marketDb.addMarketSource({
+    const source = marketDb.addMarketSource({
       market_id: market.id,
       url: 'https://example.com/vendor',
-      source_type: 'url',
+      source_type: 'exact_url',
       trust_tier: 'official',
       notes: 'Vendor homepage',
     });
 
-    marketDb.createMarketRun({
+    const run = marketDb.createMarketRun({
       market_id: market.id,
-      kind: 'scan',
+      source_id: source.id,
+      kind: 'collection',
       status: 'running',
       summary: null,
+    });
+
+    marketDb.createMarketDocument({
+      market_id: market.id,
+      source_id: source.id,
+      run_id: run.id,
+      url: source.url,
+      canonical_url: source.url,
+      title: 'Vendor homepage',
+      content_text: 'Vendor protects AI applications from prompt injection.',
+      content_hash: 'sha256:vendor-homepage',
+      status: 'fetched',
+      error: null,
+      metadata_json: JSON.stringify({ content_type: 'text/html' }),
     });
 
     getDb().prepare('DELETE FROM markets WHERE id = ?').run(market.id);
 
     expect(getDb().prepare('SELECT COUNT(*) AS c FROM market_boundaries').get()).toMatchObject({ c: 0 });
+    expect(getDb().prepare('SELECT COUNT(*) AS c FROM market_documents').get()).toMatchObject({ c: 0 });
     expect(getDb().prepare('SELECT COUNT(*) AS c FROM market_sources').get()).toMatchObject({ c: 0 });
     expect(getDb().prepare('SELECT COUNT(*) AS c FROM market_runs').get()).toMatchObject({ c: 0 });
   });
@@ -128,22 +150,22 @@ describe('market core db helpers', () => {
     expect(marketDb.getMarketBoundary(market.id)).toMatchObject(updated);
   });
 
-  it('stores configurable sources with trust metadata', async () => {
+  it('stores configurable research surfaces with explicit source type and trust metadata', async () => {
     const marketDb = await import('./markets.js');
     const market = marketDb.createMarket({ name: 'AI Security', description: null });
 
     const source = marketDb.addMarketSource({
       market_id: market.id,
-      url: 'https://example.com/vendor',
-      source_type: 'url',
+      url: 'https://docs.example.com',
+      source_type: 'docs',
       trust_tier: 'official',
-      notes: 'Vendor homepage',
+      notes: 'Vendor documentation root',
     });
 
     expect(source).toMatchObject({
       market_id: market.id,
-      url: 'https://example.com/vendor',
-      source_type: 'url',
+      url: 'https://docs.example.com',
+      source_type: 'docs',
       trust_tier: 'official',
       status: 'active',
     });
@@ -156,11 +178,26 @@ describe('market core db helpers', () => {
       marketDb.addMarketSource({
         market_id: 'mkt_missing',
         url: 'https://example.com/vendor',
-        source_type: 'url',
+        source_type: 'exact_url',
         trust_tier: 'official',
         notes: null,
       }),
     ).toThrow(/foreign key|constraint/i);
+  });
+
+  it('rejects generic url source type so callers choose an explicit research surface', async () => {
+    const marketDb = await import('./markets.js');
+    const market = marketDb.createMarket({ name: 'AI Security', description: null });
+
+    expect(() =>
+      marketDb.addMarketSource({
+        market_id: market.id,
+        url: 'https://example.com/vendor',
+        source_type: 'url',
+        trust_tier: 'official',
+        notes: null,
+      }),
+    ).toThrow(/source/i);
   });
 
   it('records market runs so agent work is auditable', async () => {
@@ -169,13 +206,15 @@ describe('market core db helpers', () => {
 
     const run = marketDb.createMarketRun({
       market_id: market.id,
-      kind: 'scan',
+      source_id: null,
+      kind: 'collection',
       status: 'running',
       summary: null,
     });
     expect(run).toMatchObject({
       market_id: market.id,
-      kind: 'scan',
+      source_id: null,
+      kind: 'collection',
       status: 'running',
       summary: null,
     });
@@ -191,5 +230,171 @@ describe('market core db helpers', () => {
     });
     expect(completed.completed_at).toEqual(expect.any(String));
     expect(marketDb.listMarketRuns(market.id)).toEqual([completed]);
+  });
+});
+
+describe('market document db helpers', () => {
+  it('stores one market document per retrieved content unit from the same source run', async () => {
+    const marketDb = await import('./markets.js');
+    const market = marketDb.createMarket({ name: 'AI Security', description: null });
+    const source = marketDb.addMarketSource({
+      market_id: market.id,
+      url: 'https://docs.example.com',
+      source_type: 'docs',
+      trust_tier: 'official',
+      notes: 'Vendor documentation root',
+    });
+    const run = marketDb.createMarketRun({
+      market_id: market.id,
+      source_id: source.id,
+      kind: 'collection',
+      status: 'running',
+      summary: null,
+    });
+
+    const root = marketDb.createMarketDocument({
+      market_id: market.id,
+      source_id: source.id,
+      run_id: run.id,
+      url: 'https://docs.example.com/',
+      canonical_url: 'https://docs.example.com/',
+      title: 'Vendor Docs',
+      content_text: 'Vendor documentation root.',
+      content_hash: 'sha256:docs-root',
+      status: 'fetched',
+      error: null,
+      metadata_json: JSON.stringify({ content_type: 'text/html', depth: 0 }),
+    });
+    const promptInjection = marketDb.createMarketDocument({
+      market_id: market.id,
+      source_id: source.id,
+      run_id: run.id,
+      url: 'https://docs.example.com/security/prompt-injection',
+      canonical_url: 'https://docs.example.com/security/prompt-injection',
+      title: 'Prompt Injection Protection',
+      content_text: 'Controls for detecting and blocking prompt injection.',
+      content_hash: 'sha256:prompt-injection',
+      status: 'fetched',
+      error: null,
+      metadata_json: JSON.stringify({ content_type: 'text/html', depth: 1 }),
+    });
+
+    const documents = marketDb.listMarketDocuments(market.id);
+    expect(documents).toHaveLength(2);
+    expect(documents).toEqual(expect.arrayContaining([root, promptInjection]));
+  });
+
+  it('stores, retrieves, and lists fetched source documents with provenance', async () => {
+    const marketDb = await import('./markets.js');
+    const market = marketDb.createMarket({ name: 'AI Security', description: null });
+    const source = marketDb.addMarketSource({
+      market_id: market.id,
+      url: 'https://example.com/vendor',
+      source_type: 'exact_url',
+      trust_tier: 'official',
+      notes: 'Vendor homepage',
+    });
+    const run = marketDb.createMarketRun({
+      market_id: market.id,
+      source_id: source.id,
+      kind: 'collection',
+      status: 'running',
+      summary: null,
+    });
+
+    const document = marketDb.createMarketDocument({
+      market_id: market.id,
+      source_id: source.id,
+      run_id: run.id,
+      url: source.url,
+      canonical_url: source.url,
+      title: 'Vendor homepage',
+      content_text: 'Vendor protects AI applications from prompt injection.',
+      content_hash: 'sha256:vendor-homepage',
+      status: 'fetched',
+      error: null,
+      metadata_json: JSON.stringify({ content_type: 'text/html' }),
+    });
+
+    expect(document).toMatchObject({
+      market_id: market.id,
+      source_id: source.id,
+      run_id: run.id,
+      url: source.url,
+      canonical_url: source.url,
+      title: 'Vendor homepage',
+      content_text: 'Vendor protects AI applications from prompt injection.',
+      content_hash: 'sha256:vendor-homepage',
+      status: 'fetched',
+      error: null,
+      metadata_json: JSON.stringify({ content_type: 'text/html' }),
+    });
+    expect(document.id).toMatch(/^mdoc_/);
+    expect(document.fetched_at).toEqual(expect.any(String));
+    expect(document.created_at).toEqual(expect.any(String));
+
+    expect(marketDb.getMarketDocument(document.id)).toEqual(document);
+    expect(marketDb.listMarketDocuments(market.id)).toEqual([document]);
+  });
+
+  it('stores failed fetch attempts so absence of evidence is auditable', async () => {
+    const marketDb = await import('./markets.js');
+    const market = marketDb.createMarket({ name: 'AI Security', description: null });
+    const source = marketDb.addMarketSource({
+      market_id: market.id,
+      url: 'https://example.com/broken',
+      source_type: 'exact_url',
+      trust_tier: 'trusted',
+      notes: null,
+    });
+
+    const document = marketDb.createMarketDocument({
+      market_id: market.id,
+      source_id: source.id,
+      run_id: null,
+      url: source.url,
+      canonical_url: source.url,
+      title: null,
+      content_text: '',
+      content_hash: null,
+      status: 'failed',
+      error: 'HTTP 500',
+      metadata_json: JSON.stringify({ content_type: 'text/html' }),
+    });
+
+    expect(document).toMatchObject({
+      market_id: market.id,
+      source_id: source.id,
+      run_id: null,
+      url: source.url,
+      canonical_url: source.url,
+      title: null,
+      content_text: '',
+      content_hash: null,
+      status: 'failed',
+      error: 'HTTP 500',
+      metadata_json: JSON.stringify({ content_type: 'text/html' }),
+    });
+    expect(marketDb.listMarketDocuments(market.id)).toEqual([document]);
+  });
+
+  it('rejects documents for unknown markets and sources', async () => {
+    const marketDb = await import('./markets.js');
+
+    expect(() =>
+      marketDb.createMarketDocument({
+        market_id: 'mkt_missing',
+        source_id: 'msrc_missing',
+        run_id: null,
+        url: 'https://example.com/vendor',
+        canonical_url: 'https://example.com/vendor',
+        title: null,
+        content_text: 'untrusted content',
+        content_hash: 'sha256:missing',
+        status: 'fetched',
+        error: null,
+        metadata_json: null,
+      }),
+    ).toThrow(/foreign key|constraint/i);
   });
 });

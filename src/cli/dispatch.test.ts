@@ -108,6 +108,15 @@ register({
 });
 
 register({
+  name: 'market-documents-list',
+  description: 'test command (market-documents resource)',
+  resource: 'market-documents',
+  access: 'open',
+  parseArgs: (raw) => raw,
+  handler: async (args) => ({ echo: args }),
+});
+
+register({
   name: 'wirings-list',
   description: 'test command (wirings resource — not allowed)',
   resource: 'wirings',
@@ -178,6 +187,7 @@ beforeEach(() => {
     members: 'agent_group_id',
     markets: 'id',
     'market-sources': 'market_id',
+    'market-documents': 'market_id',
   };
   mockGetResource.mockImplementation((plural: string) =>
     scopeFields[plural] ? { scopeField: scopeFields[plural] } : undefined,
@@ -350,6 +360,24 @@ describe('CLI scope enforcement', () => {
     if (resp.ok) {
       const data = resp.data as { echo: Record<string, unknown> };
       expect(data.echo.market_id).toBe('mkt_123');
+    }
+  });
+
+  it('group: allows market document commands for agentic review workflows', async () => {
+    mockGetContainerConfig.mockReturnValue({ cli_scope: 'group' });
+
+    const resp = await dispatch(
+      { id: '1', command: 'market-documents-list', args: { market_id: 'mkt_123' } },
+      agentCtx(),
+    );
+
+    expect(resp.ok).toBe(true);
+    if (resp.ok) {
+      const data = resp.data as { echo: Record<string, unknown> };
+      expect(data.echo.market_id).toBe('mkt_123');
+      expect(data.echo.id).toBeUndefined();
+      expect(data.echo.agent_group_id).toBeUndefined();
+      expect(data.echo.group).toBeUndefined();
     }
   });
 
