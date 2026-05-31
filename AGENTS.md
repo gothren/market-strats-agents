@@ -227,6 +227,14 @@ pnpm ncl market-candidates list --market-id <MARKET_ID> --status proposed --type
 5. Repeat for categories/problems, companies, products, and claims.
 6. Verify final counts with `market-candidates summary`.
 
+Build a read-only market overview from accepted candidates:
+
+```bash
+pnpm ncl market-candidates map --market-id <MARKET_ID> --json
+```
+
+The computed map groups accepted candidates into companies, products, problems, capabilities, categories, and claims. Treat accepted candidates as the source of truth; do not create separate facts or market-map rows.
+
 Suggested review notes:
 
 - Capabilities: `Accepted by user review: capability matches market boundary.`
@@ -255,6 +263,7 @@ Implemented:
 - evidence-backed market candidate import/list/get/review
 - compact document and candidate listing
 - candidate summary and batch review
+- read-only candidate market map
 - market run audit rows for collection and extraction
 
 Not implemented yet:

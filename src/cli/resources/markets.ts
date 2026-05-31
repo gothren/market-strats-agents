@@ -500,6 +500,49 @@ function compactCandidate(candidate: MarketCandidate) {
   };
 }
 
+type MarketCandidateMapGroups = Record<
+  'companies' | 'products' | 'problems' | 'capabilities' | 'categories' | 'claims',
+  Array<{
+    id: string;
+    name: string;
+    summary: string | null;
+    confidence: MarketCandidateConfidence;
+    review_note: string | null;
+    evidence: MarketCandidateEvidence[];
+  }>
+>;
+
+const CANDIDATE_MAP_GROUPS: Record<MarketCandidateType, keyof MarketCandidateMapGroups> = {
+  company: 'companies',
+  product: 'products',
+  problem: 'problems',
+  capability: 'capabilities',
+  category: 'categories',
+  claim: 'claims',
+};
+
+function emptyCandidateMapGroups(): MarketCandidateMapGroups {
+  return {
+    companies: [],
+    products: [],
+    problems: [],
+    capabilities: [],
+    categories: [],
+    claims: [],
+  };
+}
+
+function marketCandidateMapItem(candidate: MarketCandidate) {
+  return {
+    id: candidate.id,
+    name: candidate.name,
+    summary: candidate.summary,
+    confidence: candidate.confidence,
+    review_note: candidate.review_note,
+    evidence: JSON.parse(candidate.evidence_json) as MarketCandidateEvidence[],
+  };
+}
+
 function normalizeCandidateDisplayName(name: string): string {
   return name.trim().replace(/\s+/g, ' ');
 }
@@ -631,6 +674,38 @@ register({
   access: 'open',
   parseArgs: (raw) => ({ market_id: str(raw.market_id ?? raw['market-id'], 'market_id') }),
   handler: async (args) => summarizeMarketCandidates(args.market_id),
+});
+
+register({
+  name: 'market-candidates-map',
+  description: 'Compute a read-only market overview from accepted candidates.',
+  resource: 'market-candidates',
+  access: 'open',
+  parseArgs: (raw) => ({ market_id: str(raw.market_id ?? raw['market-id'], 'market_id') }),
+  handler: async (args) => {
+    const market = getMarket(args.market_id);
+    if (!market) throw new Error(`market not found: ${args.market_id}`);
+
+    const accepted = listMarketCandidates(args.market_id, { status: 'accepted' });
+    const groups = emptyCandidateMapGroups();
+    for (const candidate of accepted) {
+      groups[CANDIDATE_MAP_GROUPS[candidate.candidate_type]].push(marketCandidateMapItem(candidate));
+    }
+
+    return {
+      market_id: args.market_id,
+      status: 'accepted',
+      groups,
+      summary: {
+        total: accepted.length,
+        by_type: countBy(accepted.map((candidate) => candidate.candidate_type)),
+      },
+      next_actions: [
+        `ncl market-candidates summary --market-id ${args.market_id}`,
+        `ncl market-candidates list --market-id ${args.market_id} --status proposed --compact`,
+      ],
+    };
+  },
 });
 
 register({

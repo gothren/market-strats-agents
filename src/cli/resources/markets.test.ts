@@ -1332,4 +1332,228 @@ describe('market candidates CLI resource', () => {
       });
     }
   });
+
+  it('maps accepted candidates into a read-only grouped market overview', async () => {
+    const { marketId, documentId } = await createDocumentFixture();
+    const payloadFile = writePayload({
+      candidates: [
+        {
+          candidate_type: 'company',
+          name: 'Example Vendor',
+          summary: 'Builds code security tooling.',
+          confidence: 'high',
+          evidence: [{ document_id: documentId, quote: 'Vendor protects', note: 'Company positioning' }],
+          metadata: { internal: 'omitted from map' },
+        },
+        {
+          candidate_type: 'product',
+          name: 'Example Scanner',
+          summary: 'Scans repositories for vulnerable code.',
+          confidence: 'medium',
+          evidence: [{ document_id: documentId, quote: 'protects AI applications', note: null }],
+        },
+        {
+          candidate_type: 'problem',
+          name: 'Prompt injection in code agents',
+          summary: 'Attackers can manipulate coding agents through malicious prompts.',
+          confidence: 'medium',
+          evidence: [{ document_id: documentId, quote: 'prompt injection', note: null }],
+        },
+        {
+          candidate_type: 'capability',
+          name: 'Prompt injection detection',
+          summary: 'Detects prompt injection attempts.',
+          confidence: 'high',
+          evidence: [{ document_id: documentId, quote: 'prompt injection', note: 'Capability evidence' }],
+        },
+        {
+          candidate_type: 'category',
+          name: 'AI code security',
+          summary: 'Security tooling for AI-assisted software development.',
+          confidence: 'medium',
+          evidence: [{ document_id: documentId, quote: 'AI applications', note: null }],
+        },
+        {
+          candidate_type: 'claim',
+          name: 'Vendor-reported runtime protection',
+          summary: 'Vendor says it protects AI applications at runtime.',
+          confidence: 'low',
+          evidence: [{ document_id: documentId, quote: 'Vendor protects AI applications', note: 'Vendor claim' }],
+        },
+        {
+          candidate_type: 'claim',
+          name: 'Unreviewed claim',
+          summary: 'This should stay out of the accepted map.',
+          confidence: 'low',
+          evidence: [{ document_id: documentId, quote: 'Vendor protects', note: null }],
+        },
+        {
+          candidate_type: 'product',
+          name: 'Rejected product',
+          summary: 'This should stay out of the accepted map.',
+          confidence: 'low',
+          evidence: [{ document_id: documentId, quote: 'Vendor protects', note: null }],
+        },
+      ],
+    });
+
+    const imported = await dispatch(
+      {
+        id: 'req-candidates-import-map',
+        command: 'market-candidates-import',
+        args: { market_id: marketId, 'payload-file': payloadFile },
+      },
+      { caller: 'host' },
+    );
+    expect(imported.ok).toBe(true);
+    const candidates = (
+      imported as {
+        ok: true;
+        data: { candidates: Array<{ id: string; candidate_type: string; name: string }> };
+      }
+    ).data.candidates;
+    const acceptedIds = candidates
+      .filter((candidate) => !['Unreviewed claim', 'Rejected product'].includes(candidate.name))
+      .map((candidate) => candidate.id);
+    const rejectedId = candidates.find((candidate) => candidate.name === 'Rejected product')!.id;
+    const companyId = candidates.find((candidate) => candidate.candidate_type === 'company')!.id;
+
+    const accepted = await dispatch(
+      {
+        id: 'req-candidates-review-map-accepted',
+        command: 'market-candidates-review-batch',
+        args: {
+          ids: acceptedIds.join(','),
+          status: 'accepted',
+          'review-note': 'Accepted by user review for market map.',
+        },
+      },
+      { caller: 'host' },
+    );
+    expect(accepted.ok).toBe(true);
+
+    const rejected = await dispatch(
+      {
+        id: 'req-candidates-review-map-rejected',
+        command: 'market-candidates-review',
+        args: { id: rejectedId, status: 'rejected', 'review-note': 'Out of scope.' },
+      },
+      { caller: 'host' },
+    );
+    expect(rejected.ok).toBe(true);
+
+    const mapped = await dispatch(
+      {
+        id: 'req-candidates-map',
+        command: 'market-candidates-map',
+        args: { market_id: marketId },
+      },
+      { caller: 'host' },
+    );
+
+    expect(mapped.ok).toBe(true);
+    if (mapped.ok) {
+      expect(mapped.data).toMatchObject({
+        market_id: marketId,
+        status: 'accepted',
+        summary: {
+          total: 6,
+          by_type: {
+            company: 1,
+            product: 1,
+            problem: 1,
+            capability: 1,
+            category: 1,
+            claim: 1,
+          },
+        },
+        groups: {
+          companies: [
+            {
+              id: companyId,
+              name: 'Example Vendor',
+              summary: 'Builds code security tooling.',
+              confidence: 'high',
+              review_note: 'Accepted by user review for market map.',
+              evidence: [{ document_id: documentId, quote: 'Vendor protects', note: 'Company positioning' }],
+            },
+          ],
+          products: [expect.objectContaining({ name: 'Example Scanner' })],
+          problems: [expect.objectContaining({ name: 'Prompt injection in code agents' })],
+          capabilities: [expect.objectContaining({ name: 'Prompt injection detection' })],
+          categories: [expect.objectContaining({ name: 'AI code security' })],
+          claims: [expect.objectContaining({ name: 'Vendor-reported runtime protection' })],
+        },
+        next_actions: expect.arrayContaining([
+          expect.stringContaining('market-candidates summary'),
+          expect.stringContaining('market-candidates list'),
+        ]),
+      });
+
+      const data = mapped.data as {
+        groups: { companies: Array<Record<string, unknown>>; claims: Array<Record<string, unknown>> };
+      };
+      expect(data.groups.claims).toHaveLength(1);
+      expect(data.groups.claims[0].name).not.toBe('Unreviewed claim');
+      expect(data.groups.companies[0].evidence_json).toBeUndefined();
+      expect(data.groups.companies[0].metadata_json).toBeUndefined();
+      expect(data.groups.companies[0].metadata).toBeUndefined();
+      expect(data.groups.companies[0].created_at).toBeUndefined();
+      expect(data.groups.companies[0].updated_at).toBeUndefined();
+      expect(data.groups.companies[0].reviewed_at).toBeUndefined();
+    }
+  });
+
+  it('returns an empty accepted candidate map for markets without accepted candidates', async () => {
+    const { marketId } = await createDocumentFixture();
+
+    const mapped = await dispatch(
+      {
+        id: 'req-candidates-map-empty',
+        command: 'market-candidates-map',
+        args: { market_id: marketId },
+      },
+      { caller: 'host' },
+    );
+
+    expect(mapped.ok).toBe(true);
+    if (mapped.ok) {
+      expect(mapped.data).toEqual({
+        market_id: marketId,
+        status: 'accepted',
+        groups: {
+          companies: [],
+          products: [],
+          problems: [],
+          capabilities: [],
+          categories: [],
+          claims: [],
+        },
+        summary: {
+          total: 0,
+          by_type: {},
+        },
+        next_actions: expect.arrayContaining([expect.stringContaining('market-candidates list')]),
+      });
+    }
+  });
+
+  it('rejects candidate map requests for unknown markets', async () => {
+    await registerMarketsResource();
+
+    const mapped = await dispatch(
+      {
+        id: 'req-candidates-map-missing-market',
+        command: 'market-candidates-map',
+        args: { market_id: 'mkt_missing' },
+      },
+      { caller: 'host' },
+    );
+
+    expect(mapped.ok).toBe(false);
+    if (!mapped.ok) {
+      expect(mapped.error.code).toBe('handler-error');
+      expect(mapped.error.message).toMatch(/market not found/i);
+    }
+  });
 });
