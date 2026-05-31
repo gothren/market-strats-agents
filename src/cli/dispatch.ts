@@ -56,6 +56,7 @@ export async function dispatch(req: RequestFrame, ctx: CallerContext): Promise<R
         'markets',
         'market-boundaries',
         'market-sources',
+        'market-documents',
         'market-runs',
       ]);
       // Only allow whitelisted resources and general commands (no resource, like help)

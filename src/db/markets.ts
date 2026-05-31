@@ -1,10 +1,20 @@
 import { getDb } from './connection.js';
 
 export type MarketStatus = 'active' | 'archived';
-export type MarketSourceType = 'url' | 'rss' | 'search' | 'slack' | 'other';
+export type MarketSourceType =
+  | 'url'
+  | 'website'
+  | 'docs'
+  | 'blog'
+  | 'rss'
+  | 'search_query'
+  | 'slack'
+  | 'exact_url'
+  | 'manual';
 export type MarketSourceTrustTier = 'official' | 'trusted' | 'third_party' | 'search' | 'private';
-export type MarketRunKind = 'setup' | 'scan' | 'brief';
+export type MarketRunKind = 'setup' | 'collection' | 'brief';
 export type MarketRunStatus = 'running' | 'completed' | 'failed';
+export type MarketDocumentStatus = 'fetched' | 'failed' | 'skipped';
 
 export interface Market {
   id: string;
@@ -39,11 +49,29 @@ export interface MarketSource {
 export interface MarketRun {
   id: string;
   market_id: string;
+  source_id: string | null;
   kind: MarketRunKind;
   status: MarketRunStatus;
   started_at: string;
   completed_at: string | null;
   summary: string | null;
+}
+
+export interface MarketDocument {
+  id: string;
+  market_id: string;
+  source_id: string;
+  run_id: string | null;
+  url: string;
+  canonical_url: string | null;
+  title: string | null;
+  content_text: string;
+  content_hash: string | null;
+  status: MarketDocumentStatus;
+  error: string | null;
+  fetched_at: string;
+  created_at: string;
+  metadata_json: string | null;
 }
 
 function now(): string {
@@ -161,6 +189,12 @@ export function addMarketSource(input: {
   notes?: string | null;
   status?: MarketStatus;
 }): MarketSource {
+  if (input.source_type === 'url') {
+    throw new Error(
+      'source_type must be explicit; use exact_url, website, docs, blog, rss, search_query, slack, or manual',
+    );
+  }
+
   const at = now();
   const source: MarketSource = {
     id: id('msrc'),
@@ -194,6 +228,7 @@ export function listMarketSources(marketId: string): MarketSource[] {
 
 export function createMarketRun(input: {
   market_id: string;
+  source_id?: string | null;
   kind: MarketRunKind;
   status: MarketRunStatus;
   summary?: string | null;
@@ -201,6 +236,7 @@ export function createMarketRun(input: {
   const run: MarketRun = {
     id: id('mrun'),
     market_id: input.market_id,
+    source_id: input.source_id ?? null,
     kind: input.kind,
     status: input.status,
     started_at: now(),
@@ -210,8 +246,8 @@ export function createMarketRun(input: {
 
   getDb()
     .prepare(
-      `INSERT INTO market_runs (id, market_id, kind, status, started_at, completed_at, summary)
-       VALUES (@id, @market_id, @kind, @status, @started_at, @completed_at, @summary)`,
+      `INSERT INTO market_runs (id, market_id, source_id, kind, status, started_at, completed_at, summary)
+       VALUES (@id, @market_id, @source_id, @kind, @status, @started_at, @completed_at, @summary)`,
     )
     .run(run);
 
@@ -246,4 +282,58 @@ export function getLatestMarketRun(marketId: string): MarketRun | undefined {
   return getDb()
     .prepare('SELECT * FROM market_runs WHERE market_id = ? ORDER BY started_at DESC, id DESC LIMIT 1')
     .get(marketId) as MarketRun | undefined;
+}
+
+export function createMarketDocument(input: {
+  market_id: string;
+  source_id: string;
+  run_id?: string | null;
+  url: string;
+  canonical_url?: string | null;
+  title?: string | null;
+  content_text: string;
+  content_hash?: string | null;
+  status: MarketDocumentStatus;
+  error?: string | null;
+  fetched_at?: string;
+  metadata_json?: string | null;
+}): MarketDocument {
+  const at = now();
+  const document: MarketDocument = {
+    id: id('mdoc'),
+    market_id: input.market_id,
+    source_id: input.source_id,
+    run_id: input.run_id ?? null,
+    url: input.url,
+    canonical_url: input.canonical_url ?? null,
+    title: input.title ?? null,
+    content_text: input.content_text,
+    content_hash: input.content_hash ?? null,
+    status: input.status,
+    error: input.error ?? null,
+    fetched_at: input.fetched_at ?? at,
+    created_at: at,
+    metadata_json: input.metadata_json ?? null,
+  };
+
+  getDb()
+    .prepare(
+      `INSERT INTO market_documents
+         (id, market_id, source_id, run_id, url, canonical_url, title, content_text, content_hash, status, error, fetched_at, created_at, metadata_json)
+       VALUES
+         (@id, @market_id, @source_id, @run_id, @url, @canonical_url, @title, @content_text, @content_hash, @status, @error, @fetched_at, @created_at, @metadata_json)`,
+    )
+    .run(document);
+
+  return document;
+}
+
+export function getMarketDocument(id: string): MarketDocument | undefined {
+  return getDb().prepare('SELECT * FROM market_documents WHERE id = ?').get(id) as MarketDocument | undefined;
+}
+
+export function listMarketDocuments(marketId: string): MarketDocument[] {
+  return getDb()
+    .prepare('SELECT * FROM market_documents WHERE market_id = ? ORDER BY created_at DESC, id DESC')
+    .all(marketId) as MarketDocument[];
 }
