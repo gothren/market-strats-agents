@@ -56,6 +56,48 @@ const HELP_CENTER_FETCH_HEADERS = {
   'Sec-Fetch-Site': 'none',
   'Upgrade-Insecure-Requests': '1',
 };
+const MIN_CRAWLED_TEXT_LENGTH = 300;
+const LOW_VALUE_CRAWL_PATH_FRAGMENTS = [
+  '/careers',
+  '/jobs',
+  '/privacy',
+  '/terms',
+  '/legal',
+  '/cookie',
+  '/cookies',
+  '/contact',
+  '/contact-us',
+  '/login',
+  '/signin',
+  '/signup',
+  '/sign-up',
+  '/register',
+  '/demo',
+  '/book-a-demo',
+  '/request-demo',
+  '/talk-to-sales',
+  '/sales',
+  '/get-started',
+  '/events',
+  '/webinars',
+  '/press',
+  '/newsroom',
+];
+const HIGH_VALUE_CRAWL_PATH_FRAGMENTS = [
+  '/docs',
+  '/security',
+  '/product',
+  '/platform',
+  '/solutions',
+  '/customers',
+  '/case-studies',
+  '/blog',
+  '/changelog',
+  '/integrations',
+  '/pricing',
+  '/developers',
+  '/api',
+];
 
 function str(value: unknown, name: string): string {
   if (typeof value !== 'string' || value.trim() === '') {
@@ -72,6 +114,16 @@ function nullableStr(value: unknown): string | null {
 
 function bool(value: unknown): boolean {
   return value === true || value === 'true' || value === '1' || value === 1;
+}
+
+function positiveInt(value: unknown, fallback: number, name: string): number {
+  if (value === undefined || value === null || value === '') return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    const flag = name.replace(/_/g, '-');
+    throw new Error(`--${flag} (${name}) must be a positive integer`);
+  }
+  return parsed;
 }
 
 function optionalStr(value: unknown): string | null {
@@ -257,6 +309,13 @@ async function fetchExactUrl(source: MarketSource): Promise<{ response: Response
   };
 }
 
+async function fetchCrawlUrl(url: string): Promise<{ response: Response; fetchProfile: string }> {
+  return {
+    response: await fetch(url, { headers: EXACT_URL_FETCH_HEADERS, redirect: 'follow' }),
+    fetchProfile: 'default_browser_like',
+  };
+}
+
 async function collectExactUrl(
   source: MarketSource,
   run: MarketRun,
@@ -325,6 +384,247 @@ async function collectExactUrl(
   }
 }
 
+interface CollectedDocumentResult {
+  outcome: 'stored' | 'unchanged' | 'failed' | 'skipped';
+  document?: MarketDocument;
+  url: string;
+  reason?: string;
+}
+
+async function storeFetchedPage(args: {
+  source: MarketSource;
+  run: MarketRun;
+  url: string;
+  response: Response;
+  fetchProfile: string;
+  depth: number;
+}): Promise<CollectedDocumentResult> {
+  const contentType = args.response.headers.get('content-type');
+  const canonicalUrl = normalizeCrawlUrl(args.response.url || args.url, args.url) ?? args.url;
+  if (!args.response.ok) {
+    const document = createMarketDocument({
+      market_id: args.source.market_id,
+      source_id: args.source.id,
+      run_id: args.run.id,
+      url: args.url,
+      canonical_url: canonicalUrl,
+      title: null,
+      content_text: '',
+      content_hash: null,
+      status: 'failed',
+      error: `HTTP ${args.response.status}${args.response.statusText ? ` ${args.response.statusText}` : ''}`,
+      metadata_json: JSON.stringify({
+        content_type: contentType,
+        fetch_profile: args.fetchProfile,
+        source_type: args.source.source_type,
+        depth: args.depth,
+      }),
+    });
+    return { outcome: 'failed', document, url: args.url };
+  }
+
+  if (!contentType?.toLowerCase().includes('html')) {
+    return { outcome: 'skipped', url: args.url, reason: 'unsupported_content_type' };
+  }
+
+  const raw = await args.response.text();
+  const contentText = stripHtml(raw);
+  if (contentText.length < MIN_CRAWLED_TEXT_LENGTH) {
+    return { outcome: 'skipped', url: args.url, reason: 'low_quality_content' };
+  }
+
+  const contentHash = sha256(contentText);
+  const existing = findExistingFetchedMarketDocument({
+    source_id: args.source.id,
+    canonical_url: canonicalUrl,
+    content_hash: contentHash,
+  });
+  if (existing) return { outcome: 'unchanged', document: existing, url: args.url };
+
+  const document = createMarketDocument({
+    market_id: args.source.market_id,
+    source_id: args.source.id,
+    run_id: args.run.id,
+    url: args.url,
+    canonical_url: canonicalUrl,
+    title: titleFromHtml(raw),
+    content_text: contentText,
+    content_hash: contentHash,
+    status: 'fetched',
+    error: null,
+    metadata_json: JSON.stringify({
+      content_type: contentType,
+      fetch_profile: args.fetchProfile,
+      source_type: args.source.source_type,
+      depth: args.depth,
+    }),
+  });
+  return { outcome: 'stored', document, url: args.url };
+}
+
+function normalizeCrawlUrl(input: string, base: string): string | null {
+  try {
+    const url = new URL(input, base);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    url.hash = '';
+    if (url.pathname.length > 1) {
+      url.pathname = url.pathname.replace(/\/+$/g, '');
+    }
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function extractLinks(html: string, baseUrl: string): string[] {
+  const links: string[] = [];
+  const pattern = /<a\b[^>]*\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'<>]+))/gi;
+  for (const match of html.matchAll(pattern)) {
+    const normalized = normalizeCrawlUrl(match[1] ?? match[2] ?? match[3], baseUrl);
+    if (normalized) links.push(normalized);
+  }
+  return links;
+}
+
+function isLowValueCrawlUrl(url: string): boolean {
+  const path = new URL(url).pathname.toLowerCase();
+  return LOW_VALUE_CRAWL_PATH_FRAGMENTS.some((fragment) => path.includes(fragment));
+}
+
+function highValueCrawlScore(url: string): number {
+  const path = new URL(url).pathname.toLowerCase();
+  return HIGH_VALUE_CRAWL_PATH_FRAGMENTS.reduce(
+    (score, fragment, index) =>
+      path.includes(fragment) ? Math.max(score, HIGH_VALUE_CRAWL_PATH_FRAGMENTS.length - index) : score,
+    0,
+  );
+}
+
+function prioritizeCrawlLinks(links: string[]): string[] {
+  return links
+    .map((url, index) => ({ url, index, score: highValueCrawlScore(url) }))
+    .sort((a, b) => b.score - a.score || a.url.localeCompare(b.url) || a.index - b.index)
+    .map((item) => item.url);
+}
+
+async function collectCrawlSource(args: {
+  source: MarketSource;
+  run: MarketRun;
+  maxPages: number;
+  maxDepth: number;
+}): Promise<{
+  results: CollectedDocumentResult[];
+  skippedUrls: Array<{ source_id: string; url: string; reason: string }>;
+  visited: number;
+}> {
+  const startUrl = normalizeCrawlUrl(args.source.url, args.source.url);
+  if (!startUrl) {
+    return {
+      results: [],
+      skippedUrls: [{ source_id: args.source.id, url: args.source.url, reason: 'invalid_url' }],
+      visited: 0,
+    };
+  }
+
+  const origin = new URL(startUrl).origin;
+  const queue: Array<{ url: string; depth: number }> = [{ url: startUrl, depth: 0 }];
+  const seen = new Set<string>();
+  const results: CollectedDocumentResult[] = [];
+  const skippedUrls: Array<{ source_id: string; url: string; reason: string }> = [];
+  let visited = 0;
+
+  while (queue.length > 0) {
+    if (visited >= args.maxPages) {
+      for (const queued of queue) {
+        skippedUrls.push({ source_id: args.source.id, url: queued.url, reason: 'max_pages' });
+      }
+      break;
+    }
+
+    const current = queue.shift()!;
+    if (seen.has(current.url)) {
+      skippedUrls.push({ source_id: args.source.id, url: current.url, reason: 'duplicate' });
+      continue;
+    }
+    if (isLowValueCrawlUrl(current.url)) {
+      seen.add(current.url);
+      skippedUrls.push({ source_id: args.source.id, url: current.url, reason: 'excluded_low_value_path' });
+      continue;
+    }
+    seen.add(current.url);
+    visited += 1;
+
+    try {
+      const fetched = await fetchCrawlUrl(current.url);
+      const contentType = fetched.response.headers.get('content-type');
+      const raw =
+        fetched.response.ok && contentType?.toLowerCase().includes('html') ? await fetched.response.text() : null;
+      const pageResponse =
+        raw === null
+          ? fetched.response
+          : new Response(raw, {
+              status: fetched.response.status,
+              statusText: fetched.response.statusText,
+              headers: fetched.response.headers,
+            });
+      const result = await storeFetchedPage({
+        source: args.source,
+        run: args.run,
+        url: current.url,
+        response: pageResponse,
+        fetchProfile: fetched.fetchProfile,
+        depth: current.depth,
+      });
+      results.push(result);
+
+      if (result.outcome === 'skipped') {
+        skippedUrls.push({
+          source_id: args.source.id,
+          url: result.url,
+          reason: result.reason ?? 'skipped',
+        });
+      }
+
+      if (raw === null) continue;
+
+      for (const link of prioritizeCrawlLinks(extractLinks(raw, current.url))) {
+        if (new URL(link).origin !== origin) {
+          skippedUrls.push({ source_id: args.source.id, url: link, reason: 'out_of_scope' });
+        } else if (isLowValueCrawlUrl(link)) {
+          skippedUrls.push({ source_id: args.source.id, url: link, reason: 'excluded_low_value_path' });
+        } else if (seen.has(link) || queue.some((item) => item.url === link)) {
+          skippedUrls.push({ source_id: args.source.id, url: link, reason: 'duplicate' });
+        } else if (current.depth + 1 > args.maxDepth) {
+          skippedUrls.push({ source_id: args.source.id, url: link, reason: 'max_depth' });
+        } else {
+          queue.push({ url: link, depth: current.depth + 1 });
+        }
+      }
+    } catch (e) {
+      const document = createMarketDocument({
+        market_id: args.source.market_id,
+        source_id: args.source.id,
+        run_id: args.run.id,
+        url: current.url,
+        canonical_url: current.url,
+        title: null,
+        content_text: '',
+        content_hash: null,
+        status: 'failed',
+        error: e instanceof Error ? e.message : String(e),
+        metadata_json: JSON.stringify({
+          fetch_profile: 'default_browser_like',
+          source_type: args.source.source_type,
+          depth: current.depth,
+        }),
+      });
+      results.push({ outcome: 'failed', document, url: current.url });
+    }
+  }
+
+  return { results, skippedUrls, visited };
+}
+
 register({
   name: 'market-sources-collect',
   description: 'Collect evidence documents from configured market sources.',
@@ -333,6 +633,8 @@ register({
   parseArgs: (raw) => ({
     market_id: str(raw.market_id ?? raw['market-id'], 'market_id'),
     failed_only: bool(raw.failed_only ?? raw['failed-only']),
+    max_pages: positiveInt(raw.max_pages ?? raw['max-pages'], 10, 'max_pages'),
+    max_depth: positiveInt(raw.max_depth ?? raw['max-depth'], 1, 'max_depth'),
   }),
   handler: async (args) => {
     const market = getMarket(args.market_id);
@@ -355,6 +657,7 @@ register({
       document_id: string;
     }> = [];
     const unsupported: Array<{ source_id: string; source_type: MarketSourceType; url: string; reason: string }> = [];
+    const skipped_urls: Array<{ source_id: string; url: string; reason: string }> = [];
     const documents: MarketDocument[] = [];
     let visited = 0;
     const sources = args.failed_only
@@ -362,7 +665,7 @@ register({
       : listMarketSources(args.market_id).filter((item) => item.status === 'active');
 
     for (const source of sources) {
-      if (source.source_type !== 'exact_url') {
+      if (!['exact_url', 'website', 'docs'].includes(source.source_type)) {
         unsupported.push({
           source_id: source.id,
           source_type: source.source_type,
@@ -372,32 +675,70 @@ register({
         continue;
       }
 
-      visited += 1;
-      const result = await collectExactUrl(source, run);
-      if (result.outcome === 'failed') {
-        documents.push(result.document);
-        failed.push({
-          source_id: source.id,
-          url: source.url,
-          status: 'failed',
-          error: result.document.error,
-          document_id: result.document.id,
-        });
-      } else if (result.outcome === 'unchanged') {
-        unchanged_documents.push({
-          source_id: source.id,
-          url: source.url,
-          status: 'unchanged',
-          document_id: result.document.id,
-        });
+      if (source.source_type === 'exact_url') {
+        visited += 1;
+        const result = await collectExactUrl(source, run);
+        if (result.outcome === 'failed') {
+          documents.push(result.document);
+          failed.push({
+            source_id: source.id,
+            url: source.url,
+            status: 'failed',
+            error: result.document.error,
+            document_id: result.document.id,
+          });
+        } else if (result.outcome === 'unchanged') {
+          unchanged_documents.push({
+            source_id: source.id,
+            url: source.url,
+            status: 'unchanged',
+            document_id: result.document.id,
+          });
+        } else {
+          documents.push(result.document);
+          stored_documents.push({
+            source_id: source.id,
+            url: source.url,
+            status: 'fetched',
+            document_id: result.document.id,
+          });
+        }
       } else {
-        documents.push(result.document);
-        stored_documents.push({
-          source_id: source.id,
-          url: source.url,
-          status: 'fetched',
-          document_id: result.document.id,
+        const crawl = await collectCrawlSource({
+          source,
+          run,
+          maxPages: args.max_pages,
+          maxDepth: args.max_depth,
         });
+        visited += crawl.visited;
+        skipped_urls.push(...crawl.skippedUrls);
+        for (const result of crawl.results) {
+          if (result.outcome === 'failed' && result.document) {
+            documents.push(result.document);
+            failed.push({
+              source_id: source.id,
+              url: result.url,
+              status: 'failed',
+              error: result.document.error,
+              document_id: result.document.id,
+            });
+          } else if (result.outcome === 'unchanged' && result.document) {
+            unchanged_documents.push({
+              source_id: source.id,
+              url: result.url,
+              status: 'unchanged',
+              document_id: result.document.id,
+            });
+          } else if (result.outcome === 'stored' && result.document) {
+            documents.push(result.document);
+            stored_documents.push({
+              source_id: source.id,
+              url: result.url,
+              status: 'fetched',
+              document_id: result.document.id,
+            });
+          }
+        }
       }
     }
 
@@ -409,7 +750,7 @@ register({
         source_id: document.source_id,
         document_id: document.document_id,
       })),
-      skipped: 0,
+      skipped: skipped_urls.length,
       failed: failed.length,
       unsupported: unsupported.length,
     };
@@ -424,6 +765,7 @@ register({
       unchanged_documents,
       failed,
       unsupported,
+      skipped_urls,
       summary,
       documents,
       next_actions: [`ncl market-documents list --market-id ${args.market_id}`, `ncl markets get ${args.market_id}`],

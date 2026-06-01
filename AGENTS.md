@@ -93,7 +93,7 @@ If the user says "fetch this market", "collect evidence", or "review market sour
 If missing, ask for:
 
 - market id or enough information to identify the market
-- whether to add any new exact URLs before collection
+- whether to add any new exact URLs, website roots, or docs roots before collection
 
 If the market id is unknown, list markets first:
 
@@ -112,10 +112,36 @@ pnpm ncl market-sources add \
   --json
 ```
 
+For website or docs roots, use the explicit research-surface source type:
+
+```bash
+pnpm ncl market-sources add \
+  --market-id <MARKET_ID> \
+  --url "<URL>" \
+  --source-type website \
+  --trust-tier official \
+  --json
+```
+
+```bash
+pnpm ncl market-sources add \
+  --market-id <MARKET_ID> \
+  --url "<URL>" \
+  --source-type docs \
+  --trust-tier official \
+  --json
+```
+
 Run collection:
 
 ```bash
 pnpm ncl market-sources collect --market-id <MARKET_ID> --json
+```
+
+For bounded website/docs crawling, optionally set page and depth limits:
+
+```bash
+pnpm ncl market-sources collect --market-id <MARKET_ID> --max-pages 10 --max-depth 1 --json
 ```
 
 Retry only sources whose latest stored document failed:
@@ -142,12 +168,13 @@ Report:
 - number of stored documents
 - number of unchanged documents
 - number of failed documents
+- skipped URLs and skip reasons, if any
 - unsupported source types, if any
 - document ids and titles for review
 
-Repeated collection of unchanged `exact_url` content should return `unchanged_documents` and should not create duplicate fetched evidence rows. Treat `stored_documents: 0` with `unchanged_documents > 0` as a successful no-op, not a failed collection.
+Repeated collection of unchanged `exact_url`, `website`, or `docs` content should return `unchanged_documents` and should not create duplicate fetched evidence rows. Treat `stored_documents: 0` with `unchanged_documents > 0` as a successful no-op, not a failed collection.
 
-Current collection support is intentionally narrow. Only `exact_url` sources are fetched. Other valid source types such as `docs`, `website`, `blog`, `rss`, `search_query`, `slack`, and `manual` should be reported as unsupported for collection v1, not treated as exact URLs.
+Current collection support is intentionally narrow. `exact_url` sources fetch one page. `website` and `docs` sources run a same-origin, HTML-only bounded crawl and store one document per page. The crawler normalizes discovered URLs by removing fragments and non-root trailing slashes before queueing/storing, skips common low-value paths such as careers, privacy, legal, contact, login/signup, demo/request-demo/book-a-demo, sales/talk-to-sales, get-started, events, webinars, press, and newsroom pages; it does not skip pricing pages. It prioritizes high-value paths such as docs, security, product, platform, solutions, customers, case studies, blog, changelog, integrations, pricing, developers, and API pages when crawl bounds cut off the run. Crawled HTML with less than 300 characters of extracted text is skipped as `low_quality_content`. Other valid source types such as `blog`, `rss`, `search_query`, `slack`, and `manual` should be reported as unsupported for collection v1, not treated as exact URLs.
 
 ## Extracting And Reviewing Market Candidates
 
@@ -262,6 +289,7 @@ Implemented:
 - market boundary upsert
 - market source add/list
 - exact URL source collection
+- bounded website/docs source collection
 - market document storage/list/get
 - evidence-backed market candidate import/list/get/review
 - compact document and candidate listing
@@ -271,7 +299,7 @@ Implemented:
 
 Not implemented yet:
 
-- crawling for docs/websites/blogs
+- crawling for blogs
 - RSS/search/Slack/manual connectors
 - internal LLM extraction
 - companies/products/categories

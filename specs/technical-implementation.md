@@ -94,6 +94,14 @@ A collection run should record:
 Current v1 support:
 
 - `exact_url` collection.
+- same-origin, HTML-only bounded collection for `website` and `docs` sources.
+- page-level evidence storage for crawled pages.
+- crawl bounds via `--max-pages` and `--max-depth`.
+- skipped URL reporting for duplicate, out-of-scope, unsupported content type, max-pages, max-depth, invalid URL, excluded low-value path, and low-quality content cases.
+- crawl URL normalization removes fragments and non-root trailing slashes before queueing/storing to avoid duplicate page variants.
+- default low-value path filtering for pages such as careers, jobs, privacy, terms, legal, cookies, contact/contact-us, login/signin/signup/sign-up/register, demo/book-a-demo/request-demo, sales/talk-to-sales, get-started, events, webinars, press, and newsroom.
+- default high-value path prioritization for pages such as docs, security, product, platform, solutions, customers, case studies, blog, changelog, integrations, pricing, developers, and API.
+- minimum extracted text filtering for crawled HTML pages; pages under 300 characters are skipped as `low_quality_content`.
 - browser-like fetch headers for ordinary pages.
 - unchanged-content detection by `source_id`, canonical URL, and `content_hash`.
 - unsupported responses for valid source types that are not implemented yet.
@@ -102,8 +110,6 @@ Known v1 tradeoff: `--failed-only` still relies on document rows. If a failed so
 
 Near-term source expansion:
 
-- OpenAI Help Center / Intercom-style fetch compatibility.
-- shallow bounded docs or website crawl.
 - RSS.
 - manual evidence import.
 - Slack connector.

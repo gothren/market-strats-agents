@@ -27,6 +27,10 @@ function writePayload(payload: unknown): string {
   return file;
 }
 
+function longText(seed: string): string {
+  return Array.from({ length: 18 }, () => seed).join(' ');
+}
+
 describe('markets CLI resource', () => {
   it('creates a market and returns agent-friendly next actions', async () => {
     await registerMarketsResource();
@@ -905,7 +909,7 @@ describe('market sources CLI resource', () => {
     }
   });
 
-  it('reports unsupported research surfaces instead of treating them as exact URL fetches', async () => {
+  it('crawls docs sources into one market document per same-origin HTML page', async () => {
     await registerMarketsResource();
 
     const created = await dispatch(
@@ -936,6 +940,724 @@ describe('market sources CLI resource', () => {
     expect(added.ok).toBe(true);
     const sourceId = (added as { ok: true; data: { source: { id: string } } }).data.source.id;
 
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === 'https://docs.example.com/') {
+        return new Response(
+          `<html><head><title>Vendor Docs</title></head><body>${longText(
+            'Vendor documentation explains the platform architecture, deployment model, security controls, integrations, governance workflows, and operational practices for teams evaluating AI application protection.',
+          )} <a href="/security/prompt-injection">Prompt Injection</a></body></html>`,
+          { status: 200, headers: { 'content-type': 'text/html' } },
+        );
+      }
+      if (url === 'https://docs.example.com/security/prompt-injection') {
+        return new Response(
+          `<html><head><title>Prompt Injection Protection</title></head><body>${longText(
+            'Prompt injection protection documentation describes detection signals, policy controls, runtime enforcement, model-facing guardrails, alert routing, and review workflows for security teams operating AI applications.',
+          )}</body></html>`,
+          { status: 200, headers: { 'content-type': 'text/html' } },
+        );
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const collected = await dispatch(
+      {
+        id: 'req-sources-collect-docs',
+        command: 'market-sources-collect',
+        args: { market_id: marketId, 'max-pages': 5, 'max-depth': 1 },
+      },
+      { caller: 'host' },
+    );
+
+    expect(collected.ok).toBe(true);
+    if (collected.ok) {
+      expect(collected.data).toMatchObject({
+        run: {
+          market_id: marketId,
+          kind: 'collection',
+          status: 'completed',
+        },
+        stored_documents: [
+          {
+            source_id: sourceId,
+            url: 'https://docs.example.com/',
+            status: 'fetched',
+            document_id: expect.stringMatching(/^mdoc_/),
+          },
+          {
+            source_id: sourceId,
+            url: 'https://docs.example.com/security/prompt-injection',
+            status: 'fetched',
+            document_id: expect.stringMatching(/^mdoc_/),
+          },
+        ],
+        failed: [],
+        unchanged_documents: [],
+        unsupported: [],
+        summary: {
+          visited: 2,
+          stored_documents: 2,
+          unchanged_documents: 0,
+          skipped: 0,
+          failed: 0,
+          unsupported: 0,
+        },
+        documents: [
+          {
+            market_id: marketId,
+            source_id: sourceId,
+            url: 'https://docs.example.com/',
+            canonical_url: 'https://docs.example.com/',
+            title: 'Vendor Docs',
+            status: 'fetched',
+          },
+          {
+            market_id: marketId,
+            source_id: sourceId,
+            url: 'https://docs.example.com/security/prompt-injection',
+            canonical_url: 'https://docs.example.com/security/prompt-injection',
+            title: 'Prompt Injection Protection',
+            status: 'fetched',
+          },
+        ],
+      });
+      const data = collected.data as { documents: Array<{ metadata_json: string }> };
+      expect(JSON.parse(data.documents[0].metadata_json)).toMatchObject({
+        source_type: 'docs',
+        depth: 0,
+      });
+      expect(JSON.parse(data.documents[1].metadata_json)).toMatchObject({
+        source_type: 'docs',
+        depth: 1,
+      });
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('bounds website crawling and reports skipped URLs without leaving same origin', async () => {
+    await registerMarketsResource();
+
+    const created = await dispatch(
+      {
+        id: 'req-create-market',
+        command: 'markets-create',
+        args: { name: 'AI Security', description: null },
+      },
+      { caller: 'host' },
+    );
+    expect(created.ok).toBe(true);
+    const marketId = (created as { ok: true; data: { market: { id: string } } }).data.market.id;
+
+    await dispatch(
+      {
+        id: 'req-source-add',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: 'https://vendor.example.com',
+          source_type: 'website',
+          trust_tier: 'official',
+        },
+      },
+      { caller: 'host' },
+    );
+
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === 'https://vendor.example.com/') {
+        return new Response(
+          [
+            '<html><head><title>Vendor</title></head><body>',
+            longText(
+              'Vendor homepage describes an AI security platform with product capabilities, deployment options, governance workflows, integrations, customer evidence, and security operations use cases for enterprise teams.',
+            ),
+            '<a href="/platform">Platform</a>',
+            '<a href="/platform#overview">Platform duplicate</a>',
+            '<a href="https://other.example.com/offsite">External</a>',
+            '<a href="/whitepaper.pdf">PDF</a>',
+            '<a href="/zzz-deep">Deep</a>',
+            '</body></html>',
+          ].join(''),
+          { status: 200, headers: { 'content-type': 'text/html' } },
+        );
+      }
+      if (url === 'https://vendor.example.com/platform') {
+        return new Response(
+          `<html><head><title>Vendor Platform</title></head><body>${longText(
+            'The platform page details model monitoring, prompt injection protection, data leakage controls, policy management, integrations, deployment architecture, and evidence collection for AI security programs.',
+          )}</body></html>`,
+          { status: 200, headers: { 'content-type': 'text/html' } },
+        );
+      }
+      if (url === 'https://vendor.example.com/whitepaper.pdf') {
+        return new Response('pdf bytes', { status: 200, headers: { 'content-type': 'application/pdf' } });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const collected = await dispatch(
+      {
+        id: 'req-sources-collect-website',
+        command: 'market-sources-collect',
+        args: { market_id: marketId, 'max-pages': 3, 'max-depth': 1 },
+      },
+      { caller: 'host' },
+    );
+
+    expect(collected.ok).toBe(true);
+    if (collected.ok) {
+      const data = collected.data as {
+        summary: { skipped: number };
+        stored_documents: Array<{ url: string }>;
+        skipped_urls: Array<{ url: string; reason: string }>;
+      };
+      expect(data.stored_documents.map((item) => item.url)).toEqual([
+        'https://vendor.example.com/',
+        'https://vendor.example.com/platform',
+      ]);
+      expect(data.summary).toMatchObject({
+        visited: 3,
+        stored_documents: 2,
+        unchanged_documents: 0,
+        skipped: 4,
+        failed: 0,
+        unsupported: 0,
+      });
+      expect(data.skipped_urls).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ url: 'https://vendor.example.com/platform', reason: 'duplicate' }),
+          expect.objectContaining({ url: 'https://other.example.com/offsite', reason: 'out_of_scope' }),
+          expect.objectContaining({
+            url: 'https://vendor.example.com/whitepaper.pdf',
+            reason: 'unsupported_content_type',
+          }),
+          expect.objectContaining({ url: 'https://vendor.example.com/zzz-deep', reason: 'max_pages' }),
+        ]),
+      );
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('skips low-value website paths before fetching or storing them', async () => {
+    await registerMarketsResource();
+
+    const created = await dispatch(
+      {
+        id: 'req-create-market',
+        command: 'markets-create',
+        args: { name: 'AI Security', description: null },
+      },
+      { caller: 'host' },
+    );
+    expect(created.ok).toBe(true);
+    const marketId = (created as { ok: true; data: { market: { id: string } } }).data.market.id;
+
+    await dispatch(
+      {
+        id: 'req-source-add',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: 'https://vendor.example.com',
+          source_type: 'website',
+          trust_tier: 'official',
+        },
+      },
+      { caller: 'host' },
+    );
+
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === 'https://vendor.example.com/') {
+        return new Response(
+          `<html><head><title>Vendor</title></head><body>${longText(
+            'Vendor page describes AI security product capabilities, architecture, integrations, governance, runtime controls, evaluation workflows, evidence collection, deployment models, and operational outcomes.',
+          )} <a href="/careers">Careers</a><a href="/privacy">Privacy</a><a href="/book-a-demo/">Book a demo</a><a href="/contact-us/">Contact us</a><a href="/pricing">Pricing</a></body></html>`,
+          { status: 200, headers: { 'content-type': 'text/html' } },
+        );
+      }
+      if (url === 'https://vendor.example.com/pricing') {
+        return new Response(
+          `<html><head><title>Pricing</title></head><body>${longText(
+            'Pricing page explains product editions, platform packaging, security capabilities, support tiers, deployment considerations, usage dimensions, enterprise controls, and procurement details.',
+          )}</body></html>`,
+          { status: 200, headers: { 'content-type': 'text/html' } },
+        );
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const collected = await dispatch(
+      {
+        id: 'req-sources-collect-low-value-paths',
+        command: 'market-sources-collect',
+        args: { market_id: marketId, 'max-pages': 5, 'max-depth': 1 },
+      },
+      { caller: 'host' },
+    );
+
+    expect(collected.ok).toBe(true);
+    if (collected.ok) {
+      const data = collected.data as {
+        stored_documents: Array<{ url: string }>;
+        skipped_urls: Array<{ url: string; reason: string }>;
+        summary: Record<string, unknown>;
+      };
+      expect(data.stored_documents.map((item) => item.url)).toEqual([
+        'https://vendor.example.com/',
+        'https://vendor.example.com/pricing',
+      ]);
+      expect(data.skipped_urls).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ url: 'https://vendor.example.com/careers', reason: 'excluded_low_value_path' }),
+          expect.objectContaining({ url: 'https://vendor.example.com/privacy', reason: 'excluded_low_value_path' }),
+          expect.objectContaining({
+            url: 'https://vendor.example.com/book-a-demo',
+            reason: 'excluded_low_value_path',
+          }),
+          expect.objectContaining({
+            url: 'https://vendor.example.com/contact-us',
+            reason: 'excluded_low_value_path',
+          }),
+        ]),
+      );
+      expect(data.summary).toMatchObject({
+        visited: 2,
+        stored_documents: 2,
+        skipped: 4,
+      });
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).not.toHaveBeenCalledWith('https://vendor.example.com/careers', expect.anything());
+    expect(fetchMock).not.toHaveBeenCalledWith('https://vendor.example.com/privacy', expect.anything());
+    expect(fetchMock).not.toHaveBeenCalledWith('https://vendor.example.com/book-a-demo', expect.anything());
+    expect(fetchMock).not.toHaveBeenCalledWith('https://vendor.example.com/contact-us', expect.anything());
+  });
+
+  it('normalizes trailing-slash URL variants before crawling and storing documents', async () => {
+    await registerMarketsResource();
+
+    const created = await dispatch(
+      {
+        id: 'req-create-market',
+        command: 'markets-create',
+        args: { name: 'AI Security', description: null },
+      },
+      { caller: 'host' },
+    );
+    expect(created.ok).toBe(true);
+    const marketId = (created as { ok: true; data: { market: { id: string } } }).data.market.id;
+
+    await dispatch(
+      {
+        id: 'req-source-add',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: 'https://vendor.example.com',
+          source_type: 'website',
+          trust_tier: 'official',
+        },
+      },
+      { caller: 'host' },
+    );
+
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === 'https://vendor.example.com/') {
+        return new Response(
+          `<html><head><title>Vendor</title></head><body>${longText(
+            'Vendor homepage describes AI security modules, product architecture, deployment models, integrations, governance workflows, evidence collection, and operational outcomes.',
+          )} <a href="/aispm/">AISPM slash</a><a href="/aispm">AISPM no slash</a></body></html>`,
+          { status: 200, headers: { 'content-type': 'text/html' } },
+        );
+      }
+      if (url === 'https://vendor.example.com/aispm') {
+        return new Response(
+          `<html><head><title>AISPM</title></head><body>${longText(
+            'AISPM product page explains AI security posture management, inventory, risk scoring, policy enforcement, integrations, governance workflows, evidence collection, and operational reporting.',
+          )}</body></html>`,
+          { status: 200, headers: { 'content-type': 'text/html' } },
+        );
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const collected = await dispatch(
+      {
+        id: 'req-sources-collect-trailing-slash-dedupe',
+        command: 'market-sources-collect',
+        args: { market_id: marketId, 'max-pages': 5, 'max-depth': 1 },
+      },
+      { caller: 'host' },
+    );
+
+    expect(collected.ok).toBe(true);
+    if (collected.ok) {
+      const data = collected.data as {
+        stored_documents: Array<{ url: string }>;
+        skipped_urls: Array<{ url: string; reason: string }>;
+        summary: Record<string, unknown>;
+      };
+      expect(data.stored_documents.map((item) => item.url)).toEqual([
+        'https://vendor.example.com/',
+        'https://vendor.example.com/aispm',
+      ]);
+      expect(data.skipped_urls).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ url: 'https://vendor.example.com/aispm', reason: 'duplicate' }),
+        ]),
+      );
+      expect(data.summary).toMatchObject({
+        visited: 2,
+        stored_documents: 2,
+        skipped: 1,
+      });
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenNthCalledWith(2, 'https://vendor.example.com/aispm', expect.any(Object));
+  });
+
+  it('crawls high-value links before neutral links when max-pages is restrictive', async () => {
+    await registerMarketsResource();
+
+    const created = await dispatch(
+      {
+        id: 'req-create-market',
+        command: 'markets-create',
+        args: { name: 'AI Security', description: null },
+      },
+      { caller: 'host' },
+    );
+    expect(created.ok).toBe(true);
+    const marketId = (created as { ok: true; data: { market: { id: string } } }).data.market.id;
+
+    await dispatch(
+      {
+        id: 'req-source-add',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: 'https://vendor.example.com',
+          source_type: 'website',
+          trust_tier: 'official',
+        },
+      },
+      { caller: 'host' },
+    );
+
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === 'https://vendor.example.com/') {
+        return new Response(
+          `<html><head><title>Vendor</title></head><body>${longText(
+            'Vendor page describes AI security product capabilities, platform architecture, integrations, governance, runtime controls, evidence collection, deployment models, and operational outcomes.',
+          )} <a href="/about">About</a><a href="/security">Security</a></body></html>`,
+          { status: 200, headers: { 'content-type': 'text/html' } },
+        );
+      }
+      if (url === 'https://vendor.example.com/security') {
+        return new Response(
+          `<html><head><title>Security</title></head><body>${longText(
+            'Security page describes prompt injection defenses, data leakage controls, model monitoring, access controls, audit trails, integrations, incident response, and governance features.',
+          )}</body></html>`,
+          { status: 200, headers: { 'content-type': 'text/html' } },
+        );
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const collected = await dispatch(
+      {
+        id: 'req-sources-collect-prioritized-links',
+        command: 'market-sources-collect',
+        args: { market_id: marketId, 'max-pages': 2, 'max-depth': 1 },
+      },
+      { caller: 'host' },
+    );
+
+    expect(collected.ok).toBe(true);
+    if (collected.ok) {
+      const data = collected.data as {
+        stored_documents: Array<{ url: string }>;
+        skipped_urls: Array<{ url: string; reason: string }>;
+      };
+      expect(data.stored_documents.map((item) => item.url)).toEqual([
+        'https://vendor.example.com/',
+        'https://vendor.example.com/security',
+      ]);
+      expect(data.skipped_urls).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ url: 'https://vendor.example.com/about', reason: 'max_pages' }),
+        ]),
+      );
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenNthCalledWith(2, 'https://vendor.example.com/security', expect.any(Object));
+  });
+
+  it('skips low-quality crawled HTML pages after fetching without storing documents', async () => {
+    await registerMarketsResource();
+
+    const created = await dispatch(
+      {
+        id: 'req-create-market',
+        command: 'markets-create',
+        args: { name: 'AI Security', description: null },
+      },
+      { caller: 'host' },
+    );
+    expect(created.ok).toBe(true);
+    const marketId = (created as { ok: true; data: { market: { id: string } } }).data.market.id;
+
+    await dispatch(
+      {
+        id: 'req-source-add',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: 'https://docs.example.com',
+          source_type: 'docs',
+          trust_tier: 'official',
+        },
+      },
+      { caller: 'host' },
+    );
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response('<html><head><title>Thin Docs</title></head><body>Short placeholder.</body></html>', {
+            status: 200,
+            headers: { 'content-type': 'text/html' },
+          }),
+      ),
+    );
+
+    const collected = await dispatch(
+      {
+        id: 'req-sources-collect-low-quality',
+        command: 'market-sources-collect',
+        args: { market_id: marketId },
+      },
+      { caller: 'host' },
+    );
+
+    expect(collected.ok).toBe(true);
+    if (collected.ok) {
+      expect(collected.data).toMatchObject({
+        stored_documents: [],
+        documents: [],
+        skipped_urls: [
+          {
+            url: 'https://docs.example.com/',
+            reason: 'low_quality_content',
+          },
+        ],
+        summary: {
+          visited: 1,
+          stored_documents: 0,
+          skipped: 1,
+          failed: 0,
+        },
+      });
+    }
+  });
+
+  it('records failed crawled pages without aborting the source crawl', async () => {
+    await registerMarketsResource();
+
+    const created = await dispatch(
+      {
+        id: 'req-create-market',
+        command: 'markets-create',
+        args: { name: 'AI Security', description: null },
+      },
+      { caller: 'host' },
+    );
+    expect(created.ok).toBe(true);
+    const marketId = (created as { ok: true; data: { market: { id: string } } }).data.market.id;
+
+    await dispatch(
+      {
+        id: 'req-source-add',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: 'https://docs.example.com',
+          source_type: 'docs',
+          trust_tier: 'official',
+        },
+      },
+      { caller: 'host' },
+    );
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url === 'https://docs.example.com/') {
+          return new Response(
+            `<html><head><title>Docs</title></head><body>${longText(
+              'Documentation root provides implementation guidance, architecture notes, connector setup, threat model details, supported environments, and operational procedures for AI security evaluation.',
+            )} <a href="/broken">Broken</a></body></html>`,
+            { status: 200, headers: { 'content-type': 'text/html' } },
+          );
+        }
+        return new Response('server error', { status: 500, statusText: 'Server Error' });
+      }),
+    );
+
+    const collected = await dispatch(
+      {
+        id: 'req-sources-collect-docs-failed-child',
+        command: 'market-sources-collect',
+        args: { market_id: marketId, 'max-pages': 5, 'max-depth': 1 },
+      },
+      { caller: 'host' },
+    );
+
+    expect(collected.ok).toBe(true);
+    if (collected.ok) {
+      expect(collected.data).toMatchObject({
+        summary: {
+          visited: 2,
+          stored_documents: 1,
+          failed: 1,
+        },
+        stored_documents: [{ url: 'https://docs.example.com/' }],
+        failed: [
+          {
+            url: 'https://docs.example.com/broken',
+            status: 'failed',
+            error: expect.stringContaining('HTTP 500'),
+          },
+        ],
+      });
+    }
+  });
+
+  it('reports unchanged crawled pages without storing duplicate market documents', async () => {
+    await registerMarketsResource();
+
+    const created = await dispatch(
+      {
+        id: 'req-create-market',
+        command: 'markets-create',
+        args: { name: 'AI Security', description: null },
+      },
+      { caller: 'host' },
+    );
+    expect(created.ok).toBe(true);
+    const marketId = (created as { ok: true; data: { market: { id: string } } }).data.market.id;
+
+    await dispatch(
+      {
+        id: 'req-source-add',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: 'https://docs.example.com',
+          source_type: 'docs',
+          trust_tier: 'official',
+        },
+      },
+      { caller: 'host' },
+    );
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            `<html><head><title>Docs</title></head><body>${longText(
+              'Stable documentation explains the product architecture, security model, deployment flow, integrations, data handling, evidence collection, and operational controls for AI application security teams.',
+            )}</body></html>`,
+            {
+              status: 200,
+              headers: { 'content-type': 'text/html' },
+            },
+          ),
+      ),
+    );
+
+    const first = await dispatch(
+      {
+        id: 'req-sources-collect-docs-first',
+        command: 'market-sources-collect',
+        args: { market_id: marketId },
+      },
+      { caller: 'host' },
+    );
+    expect(first.ok).toBe(true);
+    const firstDocumentId = (first as { ok: true; data: { stored_documents: Array<{ document_id: string }> } }).data
+      .stored_documents[0].document_id;
+
+    const second = await dispatch(
+      {
+        id: 'req-sources-collect-docs-second',
+        command: 'market-sources-collect',
+        args: { market_id: marketId },
+      },
+      { caller: 'host' },
+    );
+
+    expect(second.ok).toBe(true);
+    if (second.ok) {
+      expect(second.data).toMatchObject({
+        stored_documents: [],
+        unchanged_documents: [
+          {
+            url: 'https://docs.example.com/',
+            status: 'unchanged',
+            document_id: firstDocumentId,
+          },
+        ],
+        summary: {
+          visited: 1,
+          stored_documents: 0,
+          unchanged_documents: 1,
+          skipped: 0,
+          failed: 0,
+          unsupported: 0,
+        },
+        documents: [],
+      });
+    }
+  });
+
+  it('reports still-unsupported research surfaces instead of treating them as exact URL fetches', async () => {
+    await registerMarketsResource();
+
+    const created = await dispatch(
+      {
+        id: 'req-create-market',
+        command: 'markets-create',
+        args: { name: 'AI Security', description: null },
+      },
+      { caller: 'host' },
+    );
+    expect(created.ok).toBe(true);
+    const marketId = (created as { ok: true; data: { market: { id: string } } }).data.market.id;
+
+    const added = await dispatch(
+      {
+        id: 'req-source-add',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: 'https://vendor.example.com/feed.xml',
+          source_type: 'rss',
+          trust_tier: 'official',
+          notes: 'Vendor feed',
+        },
+      },
+      { caller: 'host' },
+    );
+    expect(added.ok).toBe(true);
+    const sourceId = (added as { ok: true; data: { source: { id: string } } }).data.source.id;
+
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
 
@@ -951,19 +1673,14 @@ describe('market sources CLI resource', () => {
     expect(collected.ok).toBe(true);
     if (collected.ok) {
       expect(collected.data).toMatchObject({
-        run: {
-          market_id: marketId,
-          kind: 'collection',
-          status: 'completed',
-        },
         stored_documents: [],
         failed: [],
         unchanged_documents: [],
         unsupported: [
           {
             source_id: sourceId,
-            source_type: 'docs',
-            url: 'https://docs.example.com',
+            source_type: 'rss',
+            url: 'https://vendor.example.com/feed.xml',
             reason: expect.stringContaining('unsupported'),
           },
         ],

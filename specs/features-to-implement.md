@@ -11,32 +11,6 @@ Use this format so coding agents can pick up work without a long planning thread
 - `Implementation notes`: constraints, preferred direction, and known decisions.
 - `Acceptance`: what must be true before the item can be removed.
 
-## Bounded Website And Docs Crawling
-
-Goal:
-
-- Let the agent collect evidence from website/docs research surfaces, not only exact URLs.
-
-Context:
-
-- This is central to the product: market research usually starts from company websites, docs, blogs, and landing pages.
-- `market_sources` already model research surfaces, but collection currently supports only `exact_url`.
-
-Implementation notes:
-
-- Support `website` and/or `docs` source types with bounded same-domain crawling.
-- Store one `market_document` per retrieved page/content unit.
-- Enforce crawl bounds: max pages, max depth, same-domain or allowed domains, max runtime, content type restrictions, include/exclude patterns if feasible.
-- Record skipped URLs and skip reasons where practical.
-- Reuse unchanged detection by canonical URL and content hash.
-
-Acceptance:
-
-- A `website` or `docs` source can collect multiple page-level documents.
-- Collection run summary reports visited, stored, unchanged, skipped, failed, and unsupported counts where applicable.
-- Out-of-scope, duplicate, unsupported, and failed pages are auditable.
-- Existing `exact_url` behavior remains unchanged.
-
 ## Web Search Source Discovery
 
 Goal:
@@ -227,3 +201,34 @@ Acceptance:
 
 - Agent can mark or surface weak, conflicting, stale, or unknown intelligence in a structured way.
 - Reports can include uncertainty sections without unsupported guesses.
+
+# Not Prioritized Yet
+
+## Crawler Improvements
+
+Goal:
+
+- Make website/docs collection more complete, configurable, and robust once the simple bounded crawler becomes limiting.
+
+Context:
+
+- Current crawler support is intentionally conservative: same-origin, HTML-only, default `--max-pages 10`, default `--max-depth 1`, simple link extraction, and no browser rendering.
+- This is enough for early evidence collection but will miss common source shapes such as sitemaps, PDFs, JS-rendered docs, and cross-subdomain docs links.
+
+Implementation notes:
+
+- Add include/exclude URL patterns for source-specific crawl control.
+- Add allowed-domain or allowed-origin expansion so a website source can intentionally include docs/blog subdomains.
+- Add robots.txt and sitemap support where useful.
+- Add runtime timeout and per-page timeout bounds in addition to page/depth limits.
+- Improve content-type handling for PDFs and other high-value documents.
+- Parse canonical URLs from HTML metadata when available.
+- Consider a browser-backed fetch/render path only if static fetch misses important evidence.
+- Add smarter URL prioritization so pricing, docs, security, customers, changelog, blog, and product pages can be fetched before low-value pages.
+
+Acceptance:
+
+- Agent can configure crawl scope precisely without code changes.
+- Collection remains bounded and auditable.
+- High-value non-HTML or JS-rendered evidence can be captured when explicitly enabled.
+- Reports continue to cite page-level or artifact-level documents with clear provenance.
