@@ -378,6 +378,163 @@ describe('market sources CLI resource', () => {
     });
   });
 
+  it('retries OpenAI Help Center article exact_url collection with a compatibility profile after 403', async () => {
+    await registerMarketsResource();
+
+    const created = await dispatch(
+      {
+        id: 'req-create-market',
+        command: 'markets-create',
+        args: { name: 'Code Security', description: null },
+      },
+      { caller: 'host' },
+    );
+    expect(created.ok).toBe(true);
+    const marketId = (created as { ok: true; data: { market: { id: string } } }).data.market.id;
+
+    const added = await dispatch(
+      {
+        id: 'req-source-add',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: 'https://help.openai.com/en/articles/20001107',
+          source_type: 'exact_url',
+          trust_tier: 'official',
+        },
+      },
+      { caller: 'host' },
+    );
+    expect(added.ok).toBe(true);
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('forbidden', { status: 403, statusText: 'Forbidden' }))
+      .mockResolvedValueOnce(
+        new Response(
+          '<html><head><title>Codex Security</title></head><body>Codex Security helps teams identify and remediate vulnerabilities in code.</body></html>',
+          { status: 200, headers: { 'content-type': 'text/html' } },
+        ),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const fetched = await dispatch(
+      {
+        id: 'req-sources-fetch-openai-help',
+        command: 'market-sources-collect',
+        args: { market_id: marketId },
+      },
+      { caller: 'host' },
+    );
+
+    expect(fetched.ok).toBe(true);
+    if (fetched.ok) {
+      expect(fetched.data).toMatchObject({
+        stored_documents: [
+          {
+            url: 'https://help.openai.com/en/articles/20001107',
+            status: 'fetched',
+          },
+        ],
+        failed: [],
+        summary: {
+          visited: 1,
+          stored_documents: 1,
+          failed: 0,
+        },
+        documents: [
+          {
+            url: 'https://help.openai.com/en/articles/20001107',
+            title: 'Codex Security',
+            status: 'fetched',
+            content_text: expect.stringContaining('remediate vulnerabilities'),
+          },
+        ],
+      });
+      const data = fetched.data as { documents: Array<{ metadata_json: string }> };
+      expect(JSON.parse(data.documents[0].metadata_json)).toMatchObject({
+        content_type: 'text/html',
+        fetch_profile: 'help_center_browser',
+      });
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenNthCalledWith(1, 'https://help.openai.com/en/articles/20001107', {
+      headers: expect.objectContaining({
+        'User-Agent': expect.stringContaining('Mozilla/5.0'),
+      }),
+      redirect: 'follow',
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(2, 'https://help.openai.com/en/articles/20001107', {
+      headers: expect.objectContaining({
+        Referer: 'https://help.openai.com/',
+        'Sec-Fetch-Mode': 'navigate',
+      }),
+      redirect: 'follow',
+    });
+  });
+
+  it('does not retry generic exact_url collection after 403', async () => {
+    await registerMarketsResource();
+
+    const created = await dispatch(
+      {
+        id: 'req-create-market',
+        command: 'markets-create',
+        args: { name: 'AI Security', description: null },
+      },
+      { caller: 'host' },
+    );
+    expect(created.ok).toBe(true);
+    const marketId = (created as { ok: true; data: { market: { id: string } } }).data.market.id;
+
+    await dispatch(
+      {
+        id: 'req-source-add',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: 'https://example.com/blocked',
+          source_type: 'exact_url',
+          trust_tier: 'trusted',
+        },
+      },
+      { caller: 'host' },
+    );
+
+    const fetchMock = vi.fn().mockResolvedValue(new Response('forbidden', { status: 403, statusText: 'Forbidden' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const fetched = await dispatch(
+      {
+        id: 'req-sources-fetch-generic-403',
+        command: 'market-sources-collect',
+        args: { market_id: marketId },
+      },
+      { caller: 'host' },
+    );
+
+    expect(fetched.ok).toBe(true);
+    if (fetched.ok) {
+      expect(fetched.data).toMatchObject({
+        stored_documents: [],
+        failed: [
+          {
+            url: 'https://example.com/blocked',
+            status: 'failed',
+            error: expect.stringContaining('HTTP 403'),
+          },
+        ],
+        summary: {
+          visited: 1,
+          stored_documents: 0,
+          failed: 1,
+        },
+      });
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('reports unchanged exact_url collection without storing duplicate market documents', async () => {
     await registerMarketsResource();
 

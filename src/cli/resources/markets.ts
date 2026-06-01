@@ -46,6 +46,16 @@ const EXACT_URL_FETCH_HEADERS = {
   'User-Agent':
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36',
 };
+const HELP_CENTER_FETCH_HEADERS = {
+  ...EXACT_URL_FETCH_HEADERS,
+  'Cache-Control': 'no-cache',
+  Pragma: 'no-cache',
+  Referer: 'https://help.openai.com/',
+  'Sec-Fetch-Dest': 'document',
+  'Sec-Fetch-Mode': 'navigate',
+  'Sec-Fetch-Site': 'none',
+  'Upgrade-Insecure-Requests': '1',
+};
 
 function str(value: unknown, name: string): string {
   if (typeof value !== 'string' || value.trim() === '') {
@@ -227,12 +237,32 @@ function titleFromHtml(html: string): string | null {
   return title || null;
 }
 
+function isHelpCenterArticleUrl(url: string): boolean {
+  try {
+    return /^\/[a-z]{2}(?:-[a-z]{2})?\/articles\/\d+/i.test(new URL(url).pathname);
+  } catch {
+    return false;
+  }
+}
+
+async function fetchExactUrl(source: MarketSource): Promise<{ response: Response; fetchProfile: string }> {
+  const response = await fetch(source.url, { headers: EXACT_URL_FETCH_HEADERS, redirect: 'follow' });
+  if (response.status !== 403 || !isHelpCenterArticleUrl(source.url)) {
+    return { response, fetchProfile: 'default_browser_like' };
+  }
+
+  return {
+    response: await fetch(source.url, { headers: HELP_CENTER_FETCH_HEADERS, redirect: 'follow' }),
+    fetchProfile: 'help_center_browser',
+  };
+}
+
 async function collectExactUrl(
   source: MarketSource,
   run: MarketRun,
 ): Promise<{ outcome: 'stored' | 'unchanged' | 'failed'; document: MarketDocument }> {
   try {
-    const response = await fetch(source.url, { headers: EXACT_URL_FETCH_HEADERS, redirect: 'follow' });
+    const { response, fetchProfile } = await fetchExactUrl(source);
     const contentType = response.headers.get('content-type');
     if (!response.ok) {
       const document = createMarketDocument({
@@ -246,7 +276,7 @@ async function collectExactUrl(
         content_hash: null,
         status: 'failed',
         error: `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''}`,
-        metadata_json: JSON.stringify({ content_type: contentType }),
+        metadata_json: JSON.stringify({ content_type: contentType, fetch_profile: fetchProfile }),
       });
       return { document, outcome: 'failed' };
     }
@@ -274,7 +304,7 @@ async function collectExactUrl(
       content_hash: contentHash,
       status: 'fetched',
       error: null,
-      metadata_json: JSON.stringify({ content_type: contentType }),
+      metadata_json: JSON.stringify({ content_type: contentType, fetch_profile: fetchProfile }),
     });
     return { document, outcome: 'stored' };
   } catch (e) {

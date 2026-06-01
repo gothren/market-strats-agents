@@ -11,29 +11,6 @@ Use this format so coding agents can pick up work without a long planning thread
 - `Implementation notes`: constraints, preferred direction, and known decisions.
 - `Acceptance`: what must be true before the item can be removed.
 
-## OpenAI Help Center Fetch Support
-
-Goal:
-
-- Fetch OpenAI Help Center article pages reliably enough for market evidence collection.
-
-Context:
-
-- The Code Security market source `https://help.openai.com/en/articles/20001107` still fails with `HTTP 403 Forbidden`.
-- Latest observed run: `mrun_1780342497230_swkog4` for market `mkt_1780237906831_iqsl27`.
-- Mend.io now fetches successfully after browser-like headers, so this is a narrower fetch compatibility gap.
-
-Implementation notes:
-
-- Keep source fetching auditable; blocked fetches must still preserve failure status and error details.
-- Prefer a general compatibility path if it applies to Intercom-style help centers.
-- Keep the first test case anchored on the OpenAI URL above.
-
-Acceptance:
-
-- Focused coverage proves the compatibility path does not record `HTTP 403 Forbidden`.
-- Manual or fixture-backed collection stores a fetched document for the OpenAI Help Center article.
-
 ## Bounded Website And Docs Crawling
 
 Goal:
