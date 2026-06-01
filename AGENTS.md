@@ -140,9 +140,12 @@ Report:
 
 - collection run id
 - number of stored documents
+- number of unchanged documents
 - number of failed documents
 - unsupported source types, if any
 - document ids and titles for review
+
+Repeated collection of unchanged `exact_url` content should return `unchanged_documents` and should not create duplicate fetched evidence rows. Treat `stored_documents: 0` with `unchanged_documents > 0` as a successful no-op, not a failed collection.
 
 Current collection support is intentionally narrow. Only `exact_url` sources are fetched. Other valid source types such as `docs`, `website`, `blog`, `rss`, `search_query`, `slack`, and `manual` should be reported as unsupported for collection v1, not treated as exact URLs.
 

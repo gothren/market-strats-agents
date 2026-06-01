@@ -373,6 +373,25 @@ export function listMarketDocuments(marketId: string): MarketDocument[] {
     .all(marketId) as MarketDocument[];
 }
 
+export function findExistingFetchedMarketDocument(input: {
+  source_id: string;
+  canonical_url: string;
+  content_hash: string;
+}): MarketDocument | undefined {
+  return getDb()
+    .prepare(
+      `SELECT *
+       FROM market_documents
+       WHERE source_id = ?
+         AND canonical_url = ?
+         AND content_hash = ?
+         AND status = 'fetched'
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1`,
+    )
+    .get(input.source_id, input.canonical_url, input.content_hash) as MarketDocument | undefined;
+}
+
 export function listMarketSourcesWithLatestFailedDocument(marketId: string): MarketSource[] {
   return getDb()
     .prepare(

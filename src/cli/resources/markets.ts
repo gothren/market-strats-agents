@@ -5,6 +5,7 @@ import {
   createMarketDocument,
   createMarket,
   createMarketRun,
+  findExistingFetchedMarketDocument,
   getLatestMarketRun,
   getMarket,
   getMarketBoundary,
@@ -229,7 +230,7 @@ function titleFromHtml(html: string): string | null {
 async function collectExactUrl(
   source: MarketSource,
   run: MarketRun,
-): Promise<{ document: MarketDocument; failed: boolean }> {
+): Promise<{ outcome: 'stored' | 'unchanged' | 'failed'; document: MarketDocument }> {
   try {
     const response = await fetch(source.url, { headers: EXACT_URL_FETCH_HEADERS, redirect: 'follow' });
     const contentType = response.headers.get('content-type');
@@ -247,26 +248,35 @@ async function collectExactUrl(
         error: `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''}`,
         metadata_json: JSON.stringify({ content_type: contentType }),
       });
-      return { document, failed: true };
+      return { document, outcome: 'failed' };
     }
 
     const raw = await response.text();
     const isHtml = contentType?.toLowerCase().includes('html') ?? raw.includes('<html');
     const contentText = isHtml ? stripHtml(raw) : raw;
+    const canonicalUrl = response.url || source.url;
+    const contentHash = sha256(contentText);
+    const existing = findExistingFetchedMarketDocument({
+      source_id: source.id,
+      canonical_url: canonicalUrl,
+      content_hash: contentHash,
+    });
+    if (existing) return { document: existing, outcome: 'unchanged' };
+
     const document = createMarketDocument({
       market_id: source.market_id,
       source_id: source.id,
       run_id: run.id,
       url: source.url,
-      canonical_url: response.url || source.url,
+      canonical_url: canonicalUrl,
       title: isHtml ? titleFromHtml(raw) : null,
       content_text: contentText,
-      content_hash: sha256(contentText),
+      content_hash: contentHash,
       status: 'fetched',
       error: null,
       metadata_json: JSON.stringify({ content_type: contentType }),
     });
-    return { document, failed: false };
+    return { document, outcome: 'stored' };
   } catch (e) {
     const document = createMarketDocument({
       market_id: source.market_id,
@@ -281,7 +291,7 @@ async function collectExactUrl(
       error: e instanceof Error ? e.message : String(e),
       metadata_json: null,
     });
-    return { document, failed: true };
+    return { document, outcome: 'failed' };
   }
 }
 
@@ -306,6 +316,7 @@ register({
       summary: null,
     });
     const stored_documents: Array<{ source_id: string; url: string; status: 'fetched'; document_id: string }> = [];
+    const unchanged_documents: Array<{ source_id: string; url: string; status: 'unchanged'; document_id: string }> = [];
     const failed: Array<{
       source_id: string;
       url: string;
@@ -333,8 +344,8 @@ register({
 
       visited += 1;
       const result = await collectExactUrl(source, run);
-      documents.push(result.document);
-      if (result.failed) {
+      if (result.outcome === 'failed') {
+        documents.push(result.document);
         failed.push({
           source_id: source.id,
           url: source.url,
@@ -342,7 +353,15 @@ register({
           error: result.document.error,
           document_id: result.document.id,
         });
+      } else if (result.outcome === 'unchanged') {
+        unchanged_documents.push({
+          source_id: source.id,
+          url: source.url,
+          status: 'unchanged',
+          document_id: result.document.id,
+        });
       } else {
+        documents.push(result.document);
         stored_documents.push({
           source_id: source.id,
           url: source.url,
@@ -355,6 +374,11 @@ register({
     const summary = {
       visited,
       stored_documents: stored_documents.length,
+      unchanged_documents: unchanged_documents.length,
+      unchanged: unchanged_documents.map((document) => ({
+        source_id: document.source_id,
+        document_id: document.document_id,
+      })),
       skipped: 0,
       failed: failed.length,
       unsupported: unsupported.length,
@@ -367,6 +391,7 @@ register({
     return {
       run: completed,
       stored_documents,
+      unchanged_documents,
       failed,
       unsupported,
       summary,

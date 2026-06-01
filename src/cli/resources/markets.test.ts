@@ -304,10 +304,12 @@ describe('market sources CLI resource', () => {
       'fetch',
       vi
         .fn()
-        .mockResolvedValue(
-          new Response(
-            '<html><head><title>Vendor homepage</title></head><body>Vendor protects AI applications from prompt injection.</body></html>',
-            { status: 200, headers: { 'content-type': 'text/html' } },
+        .mockImplementation(() =>
+          Promise.resolve(
+            new Response(
+              '<html><head><title>Vendor homepage</title></head><body>Vendor protects AI applications from prompt injection.</body></html>',
+              { status: 200, headers: { 'content-type': 'text/html' } },
+            ),
           ),
         ),
     );
@@ -338,10 +340,12 @@ describe('market sources CLI resource', () => {
           },
         ],
         failed: [],
+        unchanged_documents: [],
         unsupported: [],
         summary: {
           visited: 1,
           stored_documents: 1,
+          unchanged_documents: 0,
           skipped: 0,
           failed: 0,
           unsupported: 0,
@@ -372,6 +376,286 @@ describe('market sources CLI resource', () => {
       }),
       redirect: 'follow',
     });
+  });
+
+  it('reports unchanged exact_url collection without storing duplicate market documents', async () => {
+    await registerMarketsResource();
+
+    const created = await dispatch(
+      {
+        id: 'req-create-market',
+        command: 'markets-create',
+        args: { name: 'AI Security', description: null },
+      },
+      { caller: 'host' },
+    );
+    expect(created.ok).toBe(true);
+    const marketId = (created as { ok: true; data: { market: { id: string } } }).data.market.id;
+
+    const added = await dispatch(
+      {
+        id: 'req-source-add',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: 'https://example.com/vendor',
+          source_type: 'exact_url',
+          trust_tier: 'official',
+          notes: null,
+        },
+      },
+      { caller: 'host' },
+    );
+    expect(added.ok).toBe(true);
+    const sourceId = (added as { ok: true; data: { source: { id: string } } }).data.source.id;
+
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockImplementation(() =>
+          Promise.resolve(
+            new Response(
+              '<html><head><title>Vendor homepage</title></head><body>Vendor protects AI applications.</body></html>',
+              { status: 200, headers: { 'content-type': 'text/html' } },
+            ),
+          ),
+        ),
+    );
+
+    const first = await dispatch(
+      {
+        id: 'req-sources-fetch-first',
+        command: 'market-sources-collect',
+        args: { market_id: marketId },
+      },
+      { caller: 'host' },
+    );
+    expect(first.ok).toBe(true);
+    const firstDocumentId = (first as { ok: true; data: { stored_documents: Array<{ document_id: string }> } }).data
+      .stored_documents[0].document_id;
+
+    const second = await dispatch(
+      {
+        id: 'req-sources-fetch-second',
+        command: 'market-sources-collect',
+        args: { market_id: marketId },
+      },
+      { caller: 'host' },
+    );
+
+    expect(second.ok).toBe(true);
+    if (second.ok) {
+      const data = second.data as {
+        run: { summary: string | null };
+        stored_documents: unknown[];
+        failed: unknown[];
+        unchanged_documents: unknown[];
+        summary: Record<string, unknown>;
+        documents: unknown[];
+      };
+      expect(data).toMatchObject({
+        stored_documents: [],
+        failed: [],
+        unchanged_documents: [
+          {
+            source_id: sourceId,
+            url: 'https://example.com/vendor',
+            status: 'unchanged',
+            document_id: firstDocumentId,
+          },
+        ],
+        summary: {
+          visited: 1,
+          stored_documents: 0,
+          unchanged_documents: 1,
+          skipped: 0,
+          failed: 0,
+          unsupported: 0,
+        },
+        documents: [],
+      });
+      expect(JSON.parse(data.run.summary as string)).toMatchObject({
+        visited: 1,
+        stored_documents: 0,
+        unchanged_documents: 1,
+        unchanged: [
+          {
+            source_id: sourceId,
+            document_id: firstDocumentId,
+          },
+        ],
+      });
+    }
+
+    const listed = await dispatch(
+      {
+        id: 'req-documents-list',
+        command: 'market-documents-list',
+        args: { market_id: marketId },
+      },
+      { caller: 'host' },
+    );
+    expect(listed.ok).toBe(true);
+    if (listed.ok) {
+      const data = listed.data as { documents: unknown[] };
+      expect(data.documents).toHaveLength(1);
+    }
+  });
+
+  it('stores a new document when exact_url content changes', async () => {
+    await registerMarketsResource();
+
+    const created = await dispatch(
+      {
+        id: 'req-create-market',
+        command: 'markets-create',
+        args: { name: 'AI Security', description: null },
+      },
+      { caller: 'host' },
+    );
+    expect(created.ok).toBe(true);
+    const marketId = (created as { ok: true; data: { market: { id: string } } }).data.market.id;
+
+    await dispatch(
+      {
+        id: 'req-source-add',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: 'https://example.com/vendor',
+          source_type: 'exact_url',
+          trust_tier: 'official',
+        },
+      },
+      { caller: 'host' },
+    );
+
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(new Response('Version one', { status: 200, headers: { 'content-type': 'text/plain' } }))
+        .mockResolvedValueOnce(new Response('Version two', { status: 200, headers: { 'content-type': 'text/plain' } })),
+    );
+
+    await dispatch(
+      {
+        id: 'req-sources-fetch-first',
+        command: 'market-sources-collect',
+        args: { market_id: marketId },
+      },
+      { caller: 'host' },
+    );
+    const second = await dispatch(
+      {
+        id: 'req-sources-fetch-second',
+        command: 'market-sources-collect',
+        args: { market_id: marketId },
+      },
+      { caller: 'host' },
+    );
+
+    expect(second.ok).toBe(true);
+    if (second.ok) {
+      const data = second.data as { summary: Record<string, unknown>; unchanged_documents: unknown[] };
+      expect(data.summary).toMatchObject({
+        stored_documents: 1,
+        unchanged_documents: 0,
+      });
+      expect(data.unchanged_documents).toEqual([]);
+    }
+
+    const listed = await dispatch(
+      {
+        id: 'req-documents-list',
+        command: 'market-documents-list',
+        args: { market_id: marketId },
+      },
+      { caller: 'host' },
+    );
+    expect(listed.ok).toBe(true);
+    if (listed.ok) {
+      const data = listed.data as { documents: unknown[] };
+      expect(data.documents).toHaveLength(2);
+    }
+  });
+
+  it('stores separate documents for unchanged content from different sources', async () => {
+    await registerMarketsResource();
+
+    const created = await dispatch(
+      {
+        id: 'req-create-market',
+        command: 'markets-create',
+        args: { name: 'AI Security', description: null },
+      },
+      { caller: 'host' },
+    );
+    expect(created.ok).toBe(true);
+    const marketId = (created as { ok: true; data: { market: { id: string } } }).data.market.id;
+
+    await dispatch(
+      {
+        id: 'req-source-add-1',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: 'https://example.com/vendor',
+          source_type: 'exact_url',
+          trust_tier: 'official',
+        },
+      },
+      { caller: 'host' },
+    );
+    await dispatch(
+      {
+        id: 'req-source-add-2',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: 'https://example.com/vendor-copy',
+          source_type: 'exact_url',
+          trust_tier: 'trusted',
+        },
+      },
+      { caller: 'host' },
+    );
+
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockImplementation(() =>
+          Promise.resolve(
+            new Response('Same vendor content', { status: 200, headers: { 'content-type': 'text/plain' } }),
+          ),
+        ),
+    );
+
+    const fetched = await dispatch(
+      {
+        id: 'req-sources-fetch',
+        command: 'market-sources-collect',
+        args: { market_id: marketId },
+      },
+      { caller: 'host' },
+    );
+
+    expect(fetched.ok).toBe(true);
+    if (fetched.ok) {
+      const data = fetched.data as {
+        summary: Record<string, unknown>;
+        unchanged_documents: unknown[];
+        documents: unknown[];
+      };
+      expect(data.summary).toMatchObject({
+        stored_documents: 2,
+        unchanged_documents: 0,
+      });
+      expect(data.unchanged_documents).toEqual([]);
+      expect(data.documents).toHaveLength(2);
+    }
   });
 
   it('records failed exact_url collection attempts instead of silently dropping them', async () => {
@@ -437,10 +721,12 @@ describe('market sources CLI resource', () => {
             document_id: expect.stringMatching(/^mdoc_/),
           },
         ],
+        unchanged_documents: [],
         unsupported: [],
         summary: {
           visited: 1,
           stored_documents: 0,
+          unchanged_documents: 0,
           skipped: 0,
           failed: 1,
           unsupported: 0,
@@ -515,6 +801,7 @@ describe('market sources CLI resource', () => {
         },
         stored_documents: [],
         failed: [],
+        unchanged_documents: [],
         unsupported: [
           {
             source_id: sourceId,
@@ -526,6 +813,7 @@ describe('market sources CLI resource', () => {
         summary: {
           visited: 0,
           stored_documents: 0,
+          unchanged_documents: 0,
           skipped: 0,
           failed: 0,
           unsupported: 1,
@@ -623,6 +911,7 @@ describe('market sources CLI resource', () => {
         summary: {
           visited: 1,
           stored_documents: 1,
+          unchanged_documents: 0,
           skipped: 0,
           failed: 0,
           unsupported: 0,

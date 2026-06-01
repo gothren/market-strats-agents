@@ -558,6 +558,67 @@ describe('market document db helpers', () => {
     expect(marketDb.listMarketDocuments(market.id)).toEqual([document]);
   });
 
+  it('finds an existing fetched document with the same source, canonical URL, and content hash', async () => {
+    const marketDb = await import('./markets.js');
+    const market = marketDb.createMarket({ name: 'AI Security', description: null });
+    const source = marketDb.addMarketSource({
+      market_id: market.id,
+      url: 'https://example.com/vendor',
+      source_type: 'exact_url',
+      trust_tier: 'official',
+      notes: null,
+    });
+    const otherSource = marketDb.addMarketSource({
+      market_id: market.id,
+      url: 'https://mirror.example.com/vendor',
+      source_type: 'exact_url',
+      trust_tier: 'trusted',
+      notes: null,
+    });
+
+    const existing = marketDb.createMarketDocument({
+      market_id: market.id,
+      source_id: source.id,
+      run_id: null,
+      url: source.url,
+      canonical_url: source.url,
+      title: 'Vendor homepage',
+      content_text: 'Vendor protects AI applications.',
+      content_hash: 'sha256:vendor-homepage',
+      status: 'fetched',
+      error: null,
+      metadata_json: null,
+    });
+    marketDb.createMarketDocument({
+      market_id: market.id,
+      source_id: otherSource.id,
+      run_id: null,
+      url: otherSource.url,
+      canonical_url: source.url,
+      title: 'Vendor homepage mirror',
+      content_text: 'Vendor protects AI applications.',
+      content_hash: 'sha256:vendor-homepage',
+      status: 'fetched',
+      error: null,
+      metadata_json: null,
+    });
+
+    expect(
+      marketDb.findExistingFetchedMarketDocument({
+        source_id: source.id,
+        canonical_url: source.url,
+        content_hash: 'sha256:vendor-homepage',
+      }),
+    ).toEqual(existing);
+    expect(
+      marketDb.findExistingFetchedMarketDocument({
+        source_id: source.id,
+        canonical_url: source.url,
+        content_hash: 'sha256:changed',
+      }),
+    ).toBeUndefined();
+  });
+
   it('stores failed fetch attempts so absence of evidence is auditable', async () => {
     const marketDb = await import('./markets.js');
     const market = marketDb.createMarket({ name: 'AI Security', description: null });
