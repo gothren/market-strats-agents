@@ -12,7 +12,7 @@ The current product and architecture specs live in [`specs/`](specs/):
 
 - [`product-spec.md`](specs/product-spec.md)
 - [`technical-implementation.md`](specs/technical-implementation.md)
-- [`core-and-skills-architecture.md`](specs/core-and-skills-architecture.md)
+- [`features-to-implement.md`](specs/features-to-implement.md)
 
 ## Base
 

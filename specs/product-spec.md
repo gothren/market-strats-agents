@@ -8,6 +8,23 @@ The product should be generic. The user defines the market during setup, such as
 
 The agent should not behave like an answer machine that guesses. It should gather evidence, propose structure, make uncertainty visible, and let the user review important changes.
 
+## Current V1 Product Shape
+
+The current implementation path uses reviewed `market_candidates` as the source of truth for market intelligence. Accepted candidates preserve evidence, confidence, review state, and review notes.
+
+For now, the product should compute market overview output from accepted candidates without writing separate durable facts or market-map tables. Add durable facts, canonical relationship editing, or versioned market-map tables only after duplicate accepted candidates, canonical naming, recategorization history, or stable report generation creates real product pain.
+
+Current evidence flow:
+
+```text
+market_sources
+  -> market_runs
+  -> market_documents
+  -> market_candidates
+  -> reviewed/accepted market_candidates
+  -> computed market overview
+```
+
 ## Primary User
 
 The primary first user is a product strategist working for a company in or near the market being researched.
