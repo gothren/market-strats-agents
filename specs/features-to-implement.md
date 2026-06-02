@@ -1,6 +1,6 @@
 # Features To Implement
 
-This is the active implementation backlog for the market strategy agent. Remove items once implemented and move durable behavior notes to `technical-implementation.md` or `product-spec.md`.
+This is the active implementation backlog and prioritized roadmap for the market strategy agent. Remove items once implemented and move durable behavior notes to `technical-implementation.md` or `product-spec.md`.
 
 The current product framing is agent-first: this repo provides durable market tools, CLI workflows, and state for a NanoClaw market strategy agent. Do not build internal LLM extraction until the agent-driven workflow becomes too repetitive or painful.
 
@@ -11,7 +11,11 @@ Use this format so coding agents can pick up work without a long planning thread
 - `Implementation notes`: constraints, preferred direction, and known decisions.
 - `Acceptance`: what must be true before the item can be removed.
 
-## Web Search Source Discovery
+Website/docs crawling v1 is already implemented. The active roadmap below prioritizes agent-facing workflows and source acquisition, with broader crawler hardening kept in `Not Prioritized Yet` until the current crawler becomes limiting.
+
+# Active Prioritized Roadmap
+
+## P1 - Web Search Source Discovery
 
 Goal:
 
@@ -36,7 +40,7 @@ Acceptance:
 - Accepted proposals can become `market_sources` with source type and trust tier metadata.
 - Rejected or ignored proposals do not pollute active sources.
 
-## Evidence-To-Candidate Agent Workflow Support
+## P2 - Evidence-To-Candidate Agent Workflow Support
 
 Goal:
 
@@ -61,7 +65,7 @@ Acceptance:
 - Imported candidates include evidence references to document ids.
 - Existing review commands can handle the resulting candidates.
 
-## Agent-Readable Market Report
+## P3 - Agent-Readable Market Report
 
 Goal:
 
@@ -85,7 +89,7 @@ Acceptance:
 - Evidence references are included for claims and market structure.
 - Empty or partial markets produce a useful report with explicit gaps.
 
-## Change Detection For Agent Review
+## P4 - Change Detection For Agent Review
 
 Goal:
 
@@ -109,7 +113,7 @@ Acceptance:
 - Output is JSON-friendly and suitable for user review.
 - No accepted candidate is modified without explicit review.
 
-## Guided Market Setup Workflow
+## P5 - Guided Market Setup Workflow
 
 Goal:
 
@@ -132,7 +136,7 @@ Acceptance:
 - Missing required fields produce clear next actions.
 - Existing market get/list output is sufficient to verify setup completion.
 
-## RSS Connector
+## P6 - RSS Connector
 
 Goal:
 
@@ -156,7 +160,7 @@ Acceptance:
 - Repeated collection does not duplicate unchanged entries.
 - Failed or malformed feed entries are auditable.
 
-## Slack Connector
+## P7 - Slack Connector
 
 Goal:
 
@@ -180,7 +184,7 @@ Acceptance:
 - Stored Slack documents have clear provenance and privacy/access metadata.
 - Missing credentials or permissions produce clear unsupported/failed responses.
 
-## Review States For Unknowns, Conflicts, And Staleness
+## P8 - Review States For Unknowns, Conflicts, And Staleness
 
 Goal:
 
@@ -232,3 +236,19 @@ Acceptance:
 - Collection remains bounded and auditable.
 - High-value non-HTML or JS-rendered evidence can be captured when explicitly enabled.
 - Reports continue to cite page-level or artifact-level documents with clear provenance.
+
+# Ideas
+
+## Feedback Loops
+
+Idea:
+
+- Give the market strategy agent a way to improve from user corrections, rejected candidates, review notes, crawl outcomes, and report feedback.
+
+Possible directions:
+
+- Track recurring reasons for rejected or edited candidates.
+- Let the agent summarize lessons from review sessions without silently changing durable market facts.
+- Surface source-quality signals such as low-yield crawls, duplicate-heavy sources, stale sources, and high-value evidence sources.
+- Use feedback to suggest prompt/workflow updates, source prioritization changes, or extraction heuristics for future runs.
+- Keep self-improvement auditable and user-approved rather than automatic.
