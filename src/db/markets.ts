@@ -18,6 +18,7 @@ export type MarketDocumentStatus = 'fetched' | 'failed' | 'skipped';
 export type MarketCandidateType = 'company' | 'product' | 'problem' | 'capability' | 'category' | 'claim';
 export type MarketCandidateConfidence = 'low' | 'medium' | 'high';
 export type MarketCandidateStatus = 'proposed' | 'accepted' | 'rejected';
+export type MarketSourceProposalStatus = 'proposed' | 'accepted' | 'rejected';
 
 export interface Market {
   id: string;
@@ -109,12 +110,44 @@ export interface MarketCandidateSummary {
   latest_extraction_run: MarketRun | null;
 }
 
+export interface MarketSourceProposal {
+  id: string;
+  market_id: string;
+  url: string;
+  normalized_url: string;
+  source_type: MarketSourceType;
+  trust_tier: MarketSourceTrustTier;
+  title: string | null;
+  snippet: string | null;
+  rationale: string;
+  discovered_from: string | null;
+  search_query: string | null;
+  proposed_entity_name: string | null;
+  proposed_entity_type: string | null;
+  status: MarketSourceProposalStatus;
+  source_id: string | null;
+  review_note: string | null;
+  metadata_json: string | null;
+  created_at: string;
+  updated_at: string;
+  reviewed_at: string | null;
+}
+
 function now(): string {
   return new Date().toISOString();
 }
 
 function id(prefix: string): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+export function normalizeMarketUrl(input: string): string {
+  const url = new URL(input);
+  url.hash = '';
+  if (url.pathname.length > 1) {
+    url.pathname = url.pathname.replace(/\/+$/g, '');
+  }
+  return url.toString();
 }
 
 export function createMarket(input: { name: string; description?: string | null; status?: MarketStatus }): Market {
@@ -259,6 +292,136 @@ export function listMarketSources(marketId: string): MarketSource[] {
   return getDb()
     .prepare('SELECT * FROM market_sources WHERE market_id = ? ORDER BY created_at, id')
     .all(marketId) as MarketSource[];
+}
+
+export function findMarketSourceByNormalizedUrl(marketId: string, url: string): MarketSource | undefined {
+  const normalizedUrl = normalizeMarketUrl(url);
+  return listMarketSources(marketId).find((source) => normalizeMarketUrl(source.url) === normalizedUrl);
+}
+
+export function createMarketSourceProposal(input: {
+  market_id: string;
+  url: string;
+  source_type: MarketSourceType;
+  trust_tier: MarketSourceTrustTier;
+  title?: string | null;
+  snippet?: string | null;
+  rationale: string;
+  discovered_from?: string | null;
+  search_query?: string | null;
+  proposed_entity_name?: string | null;
+  proposed_entity_type?: string | null;
+  metadata?: unknown;
+}): MarketSourceProposal {
+  if (input.source_type === 'url') {
+    throw new Error(
+      'source_type must be explicit; use exact_url, website, docs, blog, rss, search_query, slack, or manual',
+    );
+  }
+  if (input.rationale.trim() === '') {
+    throw new Error('source proposal rationale is required');
+  }
+
+  const at = now();
+  const proposal: MarketSourceProposal = {
+    id: id('msprop'),
+    market_id: input.market_id,
+    url: input.url,
+    normalized_url: normalizeMarketUrl(input.url),
+    source_type: input.source_type,
+    trust_tier: input.trust_tier,
+    title: input.title ?? null,
+    snippet: input.snippet ?? null,
+    rationale: input.rationale,
+    discovered_from: input.discovered_from ?? null,
+    search_query: input.search_query ?? null,
+    proposed_entity_name: input.proposed_entity_name ?? null,
+    proposed_entity_type: input.proposed_entity_type ?? null,
+    status: 'proposed',
+    source_id: null,
+    review_note: null,
+    metadata_json: input.metadata === undefined || input.metadata === null ? null : JSON.stringify(input.metadata),
+    created_at: at,
+    updated_at: at,
+    reviewed_at: null,
+  };
+
+  getDb()
+    .prepare(
+      `INSERT INTO market_source_proposals
+         (id, market_id, url, normalized_url, source_type, trust_tier, title, snippet, rationale, discovered_from, search_query, proposed_entity_name, proposed_entity_type, status, source_id, review_note, metadata_json, created_at, updated_at, reviewed_at)
+       VALUES
+         (@id, @market_id, @url, @normalized_url, @source_type, @trust_tier, @title, @snippet, @rationale, @discovered_from, @search_query, @proposed_entity_name, @proposed_entity_type, @status, @source_id, @review_note, @metadata_json, @created_at, @updated_at, @reviewed_at)`,
+    )
+    .run(proposal);
+
+  return proposal;
+}
+
+export function getMarketSourceProposal(id: string): MarketSourceProposal | undefined {
+  return getDb().prepare('SELECT * FROM market_source_proposals WHERE id = ?').get(id) as
+    | MarketSourceProposal
+    | undefined;
+}
+
+export function listMarketSourceProposals(
+  marketId: string,
+  filters?: { status?: MarketSourceProposalStatus | null },
+): MarketSourceProposal[] {
+  if (filters?.status) {
+    return getDb()
+      .prepare(
+        `SELECT *
+         FROM market_source_proposals
+         WHERE market_id = ? AND status = ?
+         ORDER BY created_at DESC, id DESC`,
+      )
+      .all(marketId, filters.status) as MarketSourceProposal[];
+  }
+
+  return getDb()
+    .prepare('SELECT * FROM market_source_proposals WHERE market_id = ? ORDER BY created_at DESC, id DESC')
+    .all(marketId) as MarketSourceProposal[];
+}
+
+export function findDuplicateMarketSourceProposal(marketId: string, url: string): MarketSourceProposal | undefined {
+  return getDb()
+    .prepare(
+      `SELECT *
+       FROM market_source_proposals
+       WHERE market_id = ? AND normalized_url = ?
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1`,
+    )
+    .get(marketId, normalizeMarketUrl(url)) as MarketSourceProposal | undefined;
+}
+
+export function reviewMarketSourceProposal(
+  id: string,
+  input: { status: MarketSourceProposalStatus; source_id?: string | null; review_note?: string | null },
+): MarketSourceProposal {
+  const reviewedAt = now();
+  const result = getDb()
+    .prepare(
+      `UPDATE market_source_proposals
+       SET status = @status,
+           source_id = @source_id,
+           review_note = @review_note,
+           reviewed_at = @reviewed_at,
+           updated_at = @updated_at
+       WHERE id = @id`,
+    )
+    .run({
+      id,
+      status: input.status,
+      source_id: input.source_id ?? null,
+      review_note: input.review_note ?? null,
+      reviewed_at: reviewedAt,
+      updated_at: reviewedAt,
+    });
+  if (result.changes === 0) throw new Error(`market source proposal not found: ${id}`);
+
+  return getMarketSourceProposal(id)!;
 }
 
 export function createMarketRun(input: {

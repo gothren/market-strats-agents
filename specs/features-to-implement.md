@@ -15,32 +15,7 @@ Website/docs crawling v1 is already implemented. The active roadmap below priori
 
 # Active Prioritized Roadmap
 
-## P1 - Web Search Source Discovery
-
-Goal:
-
-- Let the agent discover candidate sources and companies through web search.
-
-Context:
-
-- The product must help identify companies in a user-defined market, not only process URLs supplied by the user.
-- Search results should be proposed and reviewed, not silently trusted.
-
-Implementation notes:
-
-- Add an agent-friendly workflow for search query sources or source proposals.
-- Search output should include URL, title/snippet if available, source type guess, trust tier suggestion, and rationale.
-- Do not automatically activate discovered sources unless explicitly accepted.
-- Keep provider details abstract enough that the search backend can change later.
-
-Acceptance:
-
-- Agent can run or record a market search query and receive structured source proposals.
-- Duplicate source proposals are detected or easy to identify.
-- Accepted proposals can become `market_sources` with source type and trust tier metadata.
-- Rejected or ignored proposals do not pollute active sources.
-
-## P2 - Evidence-To-Candidate Agent Workflow Support
+## P1 - Evidence-To-Candidate Agent Workflow Support
 
 Goal:
 
@@ -65,7 +40,7 @@ Acceptance:
 - Imported candidates include evidence references to document ids.
 - Existing review commands can handle the resulting candidates.
 
-## P3 - Agent-Readable Market Report
+## P2 - Agent-Readable Market Report
 
 Goal:
 
@@ -89,7 +64,7 @@ Acceptance:
 - Evidence references are included for claims and market structure.
 - Empty or partial markets produce a useful report with explicit gaps.
 
-## P4 - Change Detection For Agent Review
+## P3 - Change Detection For Agent Review
 
 Goal:
 
@@ -113,7 +88,7 @@ Acceptance:
 - Output is JSON-friendly and suitable for user review.
 - No accepted candidate is modified without explicit review.
 
-## P5 - Guided Market Setup Workflow
+## P4 - Guided Market Setup Workflow
 
 Goal:
 
@@ -136,7 +111,7 @@ Acceptance:
 - Missing required fields produce clear next actions.
 - Existing market get/list output is sufficient to verify setup completion.
 
-## P6 - RSS Connector
+## P5 - RSS Connector
 
 Goal:
 
@@ -160,7 +135,7 @@ Acceptance:
 - Repeated collection does not duplicate unchanged entries.
 - Failed or malformed feed entries are auditable.
 
-## P7 - Slack Connector
+## P6 - Slack Connector
 
 Goal:
 
@@ -184,7 +159,7 @@ Acceptance:
 - Stored Slack documents have clear provenance and privacy/access metadata.
 - Missing credentials or permissions produce clear unsupported/failed responses.
 
-## P8 - Review States For Unknowns, Conflicts, And Staleness
+## P7 - Review States For Unknowns, Conflicts, And Staleness
 
 Goal:
 

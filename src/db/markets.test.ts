@@ -17,7 +17,7 @@ describe('market core schema', () => {
       .prepare(
         `SELECT name FROM sqlite_master
          WHERE type = 'table'
-           AND name IN ('markets', 'market_boundaries', 'market_sources', 'market_runs', 'market_documents', 'market_candidates')
+           AND name IN ('markets', 'market_boundaries', 'market_sources', 'market_source_proposals', 'market_runs', 'market_documents', 'market_candidates')
          ORDER BY name`,
       )
       .all() as Array<{ name: string }>;
@@ -27,6 +27,7 @@ describe('market core schema', () => {
       'market_candidates',
       'market_documents',
       'market_runs',
+      'market_source_proposals',
       'market_sources',
       'markets',
     ]);

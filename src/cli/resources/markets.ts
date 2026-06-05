@@ -4,20 +4,27 @@ import {
   createMarketCandidate,
   createMarketDocument,
   createMarket,
+  createMarketSourceProposal,
   createMarketRun,
   findExistingFetchedMarketDocument,
+  findDuplicateMarketSourceProposal,
+  findMarketSourceByNormalizedUrl,
   getLatestMarketRun,
   getMarket,
   getMarketBoundary,
   getMarketCandidate,
   getMarketDocument,
+  getMarketSourceProposal,
   findDuplicateMarketCandidate,
   listMarketCandidates,
   listMarketDocuments,
+  listMarketSourceProposals,
   listMarketSources,
   listMarketSourcesWithLatestFailedDocument,
   listMarkets,
+  normalizeMarketUrl,
   reviewMarketCandidate,
+  reviewMarketSourceProposal,
   summarizeMarketCandidates,
   upsertMarketBoundary,
   type MarketCandidate,
@@ -28,6 +35,8 @@ import {
   type MarketDocument,
   type MarketRun,
   type MarketSource,
+  type MarketSourceProposal,
+  type MarketSourceProposalStatus,
   type MarketSourceTrustTier,
   type MarketSourceType,
 } from '../../db/markets.js';
@@ -40,6 +49,7 @@ const TRUST_TIERS = ['official', 'trusted', 'third_party', 'search', 'private'] 
 const CANDIDATE_TYPES = ['company', 'product', 'problem', 'capability', 'category', 'claim'] as const;
 const CANDIDATE_CONFIDENCES = ['low', 'medium', 'high'] as const;
 const CANDIDATE_STATUSES = ['proposed', 'accepted', 'rejected'] as const;
+const SOURCE_PROPOSAL_STATUSES = ['proposed', 'accepted', 'rejected'] as const;
 const EXACT_URL_FETCH_HEADERS = {
   Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.7',
   'Accept-Language': 'en-US,en;q=0.9',
@@ -261,6 +271,289 @@ register({
   access: 'open',
   parseArgs: (raw) => ({ market_id: str(raw.market_id ?? raw['market-id'], 'market_id') }),
   handler: async (args) => ({ sources: listMarketSources(args.market_id) }),
+});
+
+interface ParsedSourceProposal {
+  url: string;
+  source_type: MarketSourceType;
+  trust_tier: MarketSourceTrustTier;
+  title: string | null;
+  snippet: string | null;
+  rationale: string;
+  discovered_from: string | null;
+  search_query: string | null;
+  proposed_entity_name: string | null;
+  proposed_entity_type: string | null;
+  metadata: unknown;
+}
+
+function assertValidHttpUrl(value: string, fieldName: string): void {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`${fieldName} must be a valid URL`);
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error(`${fieldName} must be a valid URL`);
+  }
+}
+
+function sourceProposalWithParsedJson(proposal: MarketSourceProposal) {
+  return {
+    ...proposal,
+    metadata: proposal.metadata_json ? JSON.parse(proposal.metadata_json) : null,
+  };
+}
+
+function parseSourceProposalPayload(path: string): ParsedSourceProposal[] {
+  const payload = JSON.parse(readFileSync(path, 'utf8')) as { proposals?: unknown };
+  if (!payload || !Array.isArray(payload.proposals)) {
+    throw new Error('source proposal payload must include a proposals array');
+  }
+
+  return payload.proposals.map((item, index) => {
+    if (!item || typeof item !== 'object') {
+      throw new Error(`source proposal at index ${index} must be an object`);
+    }
+    const raw = item as Record<string, unknown>;
+    const url = str(raw.url, `proposals[${index}].url`);
+    assertValidHttpUrl(url, `proposals[${index}].url`);
+    const rationale = str(raw.rationale, `proposals[${index}].rationale`);
+
+    return {
+      url,
+      source_type: requiredEnum(
+        raw.source_type ?? raw['source-type'],
+        SOURCE_TYPES,
+        `proposals[${index}].source_type`,
+      ) as MarketSourceType,
+      trust_tier: optionalEnum(
+        raw.trust_tier ?? raw['trust-tier'],
+        TRUST_TIERS,
+        'search',
+        `proposals[${index}].trust_tier`,
+      ) as MarketSourceTrustTier,
+      title: optionalStr(raw.title),
+      snippet: optionalStr(raw.snippet),
+      rationale,
+      discovered_from: optionalStr(raw.discovered_from ?? raw['discovered-from']),
+      search_query: optionalStr(raw.search_query ?? raw['search-query']),
+      proposed_entity_name: optionalStr(raw.proposed_entity_name ?? raw['proposed-entity-name']),
+      proposed_entity_type: optionalStr(raw.proposed_entity_type ?? raw['proposed-entity-type']),
+      metadata: raw.metadata ?? null,
+    };
+  });
+}
+
+function parseProposalIds(value: unknown): string[] {
+  const ids = str(value, 'ids')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (ids.length === 0) throw new Error('--ids (ids) must include at least one source proposal id');
+  return ids;
+}
+
+function acceptSourceProposal(proposal: MarketSourceProposal, reviewNote: string | null) {
+  const existing = findMarketSourceByNormalizedUrl(proposal.market_id, proposal.url);
+  const source =
+    existing ??
+    addMarketSource({
+      market_id: proposal.market_id,
+      url: proposal.url,
+      source_type: proposal.source_type,
+      trust_tier: proposal.trust_tier,
+      notes: `Accepted source proposal ${proposal.id}${proposal.rationale ? `: ${proposal.rationale}` : ''}`,
+    });
+  const reviewed = reviewMarketSourceProposal(proposal.id, {
+    status: 'accepted',
+    source_id: source.id,
+    review_note: reviewNote,
+  });
+  return { proposal: reviewed, source };
+}
+
+register({
+  name: 'market-source-proposals-import',
+  description: 'Import agent-discovered source proposals from a JSON payload file.',
+  resource: 'market-source-proposals',
+  access: 'open',
+  parseArgs: (raw) => ({
+    market_id: str(raw.market_id ?? raw['market-id'], 'market_id'),
+    payload_file: str(raw.payload_file ?? raw['payload-file'], 'payload_file'),
+  }),
+  handler: async (args) => {
+    const market = getMarket(args.market_id);
+    if (!market) throw new Error(`market not found: ${args.market_id}`);
+
+    const proposals = parseSourceProposalPayload(args.payload_file);
+    const imported: MarketSourceProposal[] = [];
+    const skipped_duplicates: Array<{
+      url: string;
+      duplicate_type: 'proposal' | 'source';
+      existing_id: string;
+    }> = [];
+
+    for (const proposal of proposals) {
+      const duplicateProposal = findDuplicateMarketSourceProposal(args.market_id, proposal.url);
+      if (duplicateProposal) {
+        skipped_duplicates.push({
+          url: normalizeMarketUrl(proposal.url),
+          duplicate_type: 'proposal',
+          existing_id: duplicateProposal.id,
+        });
+        continue;
+      }
+
+      const duplicateSource = findMarketSourceByNormalizedUrl(args.market_id, proposal.url);
+      if (duplicateSource) {
+        skipped_duplicates.push({
+          url: normalizeMarketUrl(proposal.url),
+          duplicate_type: 'source',
+          existing_id: duplicateSource.id,
+        });
+        continue;
+      }
+
+      imported.push(createMarketSourceProposal({ market_id: args.market_id, ...proposal }));
+    }
+
+    return {
+      summary: {
+        imported: imported.length,
+        skipped_duplicates: skipped_duplicates.length,
+      },
+      skipped_duplicates,
+      proposals: imported.map(sourceProposalWithParsedJson),
+      next_actions: [
+        `ncl market-source-proposals list --market-id ${args.market_id} --status proposed`,
+        `ncl market-source-proposals review <PROPOSAL_ID> --status accepted --review-note "..."`,
+      ],
+    };
+  },
+});
+
+register({
+  name: 'market-source-proposals-list',
+  description: 'List agent-discovered source proposals for a market.',
+  resource: 'market-source-proposals',
+  access: 'open',
+  parseArgs: (raw) => ({
+    market_id: str(raw.market_id ?? raw['market-id'], 'market_id'),
+    status:
+      raw.status === undefined || raw.status === null || raw.status === ''
+        ? null
+        : (requiredEnum(raw.status, SOURCE_PROPOSAL_STATUSES, 'status') as MarketSourceProposalStatus),
+  }),
+  handler: async (args) => ({
+    proposals: listMarketSourceProposals(args.market_id, { status: args.status }).map(sourceProposalWithParsedJson),
+    next_actions: [
+      `ncl market-source-proposals get <PROPOSAL_ID>`,
+      `ncl market-source-proposals review <PROPOSAL_ID> --status accepted --review-note "..."`,
+    ],
+  }),
+});
+
+register({
+  name: 'market-source-proposals-get',
+  description: 'Get one agent-discovered source proposal.',
+  resource: 'market-source-proposals',
+  access: 'open',
+  parseArgs: (raw) => ({ id: str(raw.id, 'id') }),
+  handler: async (args) => {
+    const proposal = getMarketSourceProposal(args.id);
+    if (!proposal) throw new Error(`market source proposal not found: ${args.id}`);
+    return {
+      proposal: sourceProposalWithParsedJson(proposal),
+      next_actions: [`ncl market-source-proposals review ${proposal.id} --status accepted --review-note "..."`],
+    };
+  },
+});
+
+register({
+  name: 'market-source-proposals-review',
+  description: 'Accept or reject one source proposal.',
+  resource: 'market-source-proposals',
+  access: 'open',
+  parseArgs: (raw) => ({
+    id: str(raw.id, 'id'),
+    status: requiredEnum(raw.status, ['accepted', 'rejected'] as const, 'status') as Extract<
+      MarketSourceProposalStatus,
+      'accepted' | 'rejected'
+    >,
+    review_note: nullableStr(raw.review_note ?? raw['review-note']),
+  }),
+  handler: async (args) => {
+    const proposal = getMarketSourceProposal(args.id);
+    if (!proposal) throw new Error(`market source proposal not found: ${args.id}`);
+
+    if (args.status === 'accepted') {
+      const accepted = acceptSourceProposal(proposal, args.review_note);
+      return {
+        proposal: sourceProposalWithParsedJson(accepted.proposal),
+        source: accepted.source,
+        next_actions: [`ncl market-sources collect --market-id ${proposal.market_id}`],
+      };
+    }
+
+    const rejected = reviewMarketSourceProposal(proposal.id, {
+      status: 'rejected',
+      source_id: null,
+      review_note: args.review_note,
+    });
+    return {
+      proposal: sourceProposalWithParsedJson(rejected),
+      source: null,
+      next_actions: [`ncl market-source-proposals list --market-id ${proposal.market_id} --status proposed`],
+    };
+  },
+});
+
+register({
+  name: 'market-source-proposals-review-batch',
+  description: 'Accept or reject multiple source proposals.',
+  resource: 'market-source-proposals',
+  access: 'open',
+  parseArgs: (raw) => ({
+    ids: parseProposalIds(raw.ids),
+    status: requiredEnum(raw.status, ['accepted', 'rejected'] as const, 'status') as Extract<
+      MarketSourceProposalStatus,
+      'accepted' | 'rejected'
+    >,
+    review_note: nullableStr(raw.review_note ?? raw['review-note']),
+  }),
+  handler: async (args) => {
+    const reviewed: Array<{ id: string; status: MarketSourceProposalStatus; source_id: string | null }> = [];
+    const failed: Array<{ id: string; error: string }> = [];
+    for (const id of args.ids) {
+      try {
+        const proposal = getMarketSourceProposal(id);
+        if (!proposal) throw new Error(`market source proposal not found: ${id}`);
+        const result =
+          args.status === 'accepted'
+            ? acceptSourceProposal(proposal, args.review_note).proposal
+            : reviewMarketSourceProposal(proposal.id, {
+                status: 'rejected',
+                source_id: null,
+                review_note: args.review_note,
+              });
+        reviewed.push({ id: result.id, status: result.status, source_id: result.source_id });
+      } catch (e) {
+        failed.push({ id, error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+
+    return {
+      reviewed,
+      failed,
+      summary: {
+        requested: args.ids.length,
+        reviewed: reviewed.length,
+        failed: failed.length,
+      },
+    };
+  },
 });
 
 function sha256(text: string): string {

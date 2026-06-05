@@ -133,6 +133,14 @@ The agent should retain provenance for every source:
 - associated market
 - associated run
 
+## Source Proposal Workflow
+
+The product should treat web search as an agent capability, not necessarily an internal product capability. An external agent may use its own search tools to find likely company websites, docs, blogs, pricing pages, or other research surfaces.
+
+Those findings should enter the product as `market_source_proposals`, not immediately as active sources. A proposal records the URL, intended source type, trust tier suggestion, title or snippet, rationale, discovery method, search query, and optional proposed entity name/type.
+
+Proposals start as `proposed`. A user or agent review can mark them `accepted` or `rejected`. Accepted proposals become ordinary `market_sources` and have the same operational weight as user-provided sources, while preserving proposal provenance and review notes. Rejected proposals remain durable memory of what was considered so repeated searches do not keep resurfacing the same low-quality sources.
+
 ## Review Workflow
 
 The agent should separate accepted intelligence from proposed intelligence.

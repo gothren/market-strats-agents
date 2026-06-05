@@ -176,6 +176,72 @@ Repeated collection of unchanged `exact_url`, `website`, or `docs` content shoul
 
 Current collection support is intentionally narrow. `exact_url` sources fetch one page. `website` and `docs` sources run a same-origin, HTML-only bounded crawl and store one document per page. The crawler normalizes discovered URLs by removing fragments and non-root trailing slashes before queueing/storing, skips common low-value paths such as careers, privacy, legal, contact, login/signup, demo/request-demo/book-a-demo, sales/talk-to-sales, get-started, events, webinars, press, and newsroom pages; it does not skip pricing pages. It prioritizes high-value paths such as docs, security, product, platform, solutions, customers, case studies, blog, changelog, integrations, pricing, developers, and API pages when crawl bounds cut off the run. Crawled HTML with less than 300 characters of extracted text is skipped as `low_quality_content`. Other valid source types such as `blog`, `rss`, `search_query`, `slack`, and `manual` should be reported as unsupported for collection v1, not treated as exact URLs.
 
+## Proposing Agent-Discovered Sources
+
+If the user asks to discover sources or companies, use your own search tools first. Do not expect this repo to execute web search. Convert useful search findings into source proposals so they can be reviewed before becoming active market sources.
+
+Use `trust_tier: "official"` for official vendor websites, docs, blogs, pricing pages, and RSS feeds. Use `trusted` for user-provided or known-good non-official sources, `third_party` for external commentary/directories, `search` for raw search-result surfaces, and `private` for internal sources.
+
+Search quality guidance: prefer official vendor homepages, product pages, and docs over blogs, press pages, analyst pages, marketplaces, or old launch posts.
+
+Docs vs website rule: use `docs` when product docs are the best crawl root; use `website` for vendor or product marketing surfaces; use `exact_url` for one stable product page.
+
+Create a JSON payload:
+
+```json
+{
+  "proposals": [
+    {
+      "url": "https://vendor.example.com",
+      "source_type": "website",
+      "trust_tier": "official",
+      "title": "Vendor Example",
+      "snippet": "Search result or page snippet.",
+      "rationale": "Official company website found while searching AI security vendors.",
+      "discovered_from": "agent_web_search",
+      "search_query": "AI security companies",
+      "proposed_entity_name": "Vendor Example",
+      "proposed_entity_type": "company",
+      "metadata": {}
+    }
+  ]
+}
+```
+
+For temporary payloads, prefer a file under `/private/tmp`, for example `/private/tmp/<market-slug>-source-proposals.json`.
+
+Import proposals:
+
+```bash
+pnpm ncl market-source-proposals import --market-id <MARKET_ID> --payload-file <JSON_FILE> --json
+```
+
+Review proposals:
+
+```bash
+pnpm ncl market-source-proposals list --market-id <MARKET_ID> --status proposed --json
+pnpm ncl market-source-proposals get <PROPOSAL_ID> --json
+pnpm ncl market-source-proposals review <PROPOSAL_ID> --status accepted --review-note "Official source; accept for crawl." --json
+pnpm ncl market-source-proposals review-batch --ids <ID_1>,<ID_2> --status rejected --review-note "Out of scope or low confidence." --json
+```
+
+If the user asks to accept all recommended proposals, use batch review:
+
+```bash
+pnpm ncl market-source-proposals review-batch --ids <ID_1>,<ID_2>,<ID_3> --status accepted --review-note "Accepted by user review as relevant source proposals." --json
+```
+
+Accepted proposals become ordinary `market_sources` and can be collected with `market-sources collect`. Rejected proposals remain as durable memory of discarded search findings. Use explicit source types such as `website`, `docs`, or `exact_url`; do not use generic `url`.
+
+Final verification:
+
+```bash
+pnpm ncl market-source-proposals list --market-id <MARKET_ID> --status accepted --json
+pnpm ncl market-sources list --market-id <MARKET_ID> --json
+```
+
+Confirm each accepted proposal has a `source_id`, and confirm each accepted source appears in `market-sources list`. Leave the host running if the user is continuing the workflow; stop it only if the user asks or the task is clearly complete.
+
 ## Extracting And Reviewing Market Candidates
 
 If the user says "extract findings", "analyze fetched evidence", or "find companies/problems/capabilities", interpret it as product operation, not code implementation.
@@ -288,6 +354,7 @@ Implemented:
 - market creation/list/get
 - market boundary upsert
 - market source add/list
+- source proposal import/list/get/review
 - exact URL source collection
 - bounded website/docs source collection
 - market document storage/list/get
@@ -300,7 +367,8 @@ Implemented:
 Not implemented yet:
 
 - crawling for blogs
-- RSS/search/Slack/manual connectors
+- internal web search execution
+- RSS/Slack/manual connectors
 - internal LLM extraction
 - companies/products/categories
 - market reports

@@ -33,6 +33,7 @@ Current main records:
 
 - `markets`: user-defined market workspaces.
 - `market_boundaries`: inclusions, exclusions, adjacent markets, and notes.
+- `market_source_proposals`: reviewable source URLs found by agents before they become active sources.
 - `market_sources`: research surfaces the agent is allowed to inspect.
 - `market_runs`: auditable collection or extraction attempts.
 - `market_documents`: retrieved evidence artifacts.
@@ -75,6 +76,24 @@ A `market_document` should represent one retrieved content unit:
 - manual upload or note: one provided artifact as a document
 
 Extraction and categorization should operate on stored `market_documents`, not directly on live URLs.
+
+## Source Proposal Rules
+
+External agents may use their own search tools. This repo stores their URL findings as source proposals so discovery remains auditable and reviewable.
+
+A source proposal records:
+
+- URL.
+- explicit source type.
+- trust tier suggestion.
+- title, snippet, rationale, discovery method, and search query when available.
+- optional proposed entity name/type.
+- status: `proposed`, `accepted`, or `rejected`.
+- optional link to the `market_source` created when accepted.
+
+Proposal import validates URL, source type, and rationale. Generic `url` is rejected. Imports dedupe against already imported proposals and active market sources by normalized URL.
+
+Accepted proposals become ordinary `market_sources`; rejected proposals do not create sources. Once accepted, proposal-discovered sources have the same collection behavior and operational weight as user-provided sources, with provenance preserved through the proposal row and source notes.
 
 ## Collection Rules
 
@@ -152,6 +171,7 @@ Implemented workflows:
 - create/list/get markets
 - upsert market boundaries
 - add/list market sources
+- import/list/get/review source proposals and accept them into market sources
 - collect `exact_url` evidence into documents
 - list/get documents, including compact list output
 - import market candidates from JSON

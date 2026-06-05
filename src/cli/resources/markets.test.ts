@@ -1798,6 +1798,387 @@ describe('market sources CLI resource', () => {
   });
 });
 
+describe('market source proposal CLI resource', () => {
+  async function createMarketForSourceProposals(): Promise<string> {
+    await registerMarketsResource();
+
+    const created = await dispatch(
+      {
+        id: 'req-create-market',
+        command: 'markets-create',
+        args: { name: `AI Security ${Math.random()}`, description: null },
+      },
+      { caller: 'host' },
+    );
+    expect(created.ok).toBe(true);
+    return (created as { ok: true; data: { market: { id: string } } }).data.market.id;
+  }
+
+  it('imports and lists agent-discovered source proposals for review', async () => {
+    const marketId = await createMarketForSourceProposals();
+    const payloadFile = writePayload({
+      proposals: [
+        {
+          url: 'https://vendor.example.com/',
+          source_type: 'website',
+          trust_tier: 'official',
+          title: 'Vendor Example',
+          snippet: 'AI security platform for enterprise teams.',
+          rationale: 'Official company website found while searching AI security companies.',
+          discovered_from: 'agent_web_search',
+          search_query: 'AI security companies',
+          proposed_entity_name: 'Vendor Example',
+          proposed_entity_type: 'company',
+          metadata: { rank: 1 },
+        },
+      ],
+    });
+
+    const imported = await dispatch(
+      {
+        id: 'req-source-proposals-import',
+        command: 'market-source-proposals-import',
+        args: { market_id: marketId, payload_file: payloadFile },
+      },
+      { caller: 'host' },
+    );
+
+    expect(imported.ok).toBe(true);
+    if (imported.ok) {
+      expect(imported.data).toMatchObject({
+        summary: { imported: 1, skipped_duplicates: 0 },
+        proposals: [
+          {
+            market_id: marketId,
+            url: 'https://vendor.example.com/',
+            source_type: 'website',
+            trust_tier: 'official',
+            title: 'Vendor Example',
+            status: 'proposed',
+            source_id: null,
+          },
+        ],
+        next_actions: expect.arrayContaining([expect.stringContaining('market-source-proposals list')]),
+      });
+      const proposal = (imported.data as { proposals: Array<{ id: string; metadata: unknown }> }).proposals[0];
+      expect(proposal.id).toMatch(/^msprop_/);
+      expect(proposal.metadata).toEqual({ rank: 1 });
+    }
+
+    const listed = await dispatch(
+      {
+        id: 'req-source-proposals-list',
+        command: 'market-source-proposals-list',
+        args: { market_id: marketId, status: 'proposed' },
+      },
+      { caller: 'host' },
+    );
+
+    expect(listed.ok).toBe(true);
+    if (listed.ok) {
+      expect(listed.data).toMatchObject({
+        proposals: [
+          {
+            url: 'https://vendor.example.com/',
+            status: 'proposed',
+            rationale: 'Official company website found while searching AI security companies.',
+          },
+        ],
+      });
+    }
+  });
+
+  it('rejects invalid source proposal payloads with actionable errors', async () => {
+    const marketId = await createMarketForSourceProposals();
+
+    const invalidPayloads = [
+      {
+        payload: { proposals: [{ source_type: 'website', rationale: 'Missing URL.' }] },
+        error: /url/i,
+      },
+      {
+        payload: { proposals: [{ url: 'not a url', source_type: 'website', rationale: 'Invalid URL.' }] },
+        error: /valid URL/i,
+      },
+      {
+        payload: { proposals: [{ url: 'https://vendor.example.com', source_type: 'url', rationale: 'Generic URL.' }] },
+        error: /source_type/i,
+      },
+      {
+        payload: { proposals: [{ url: 'https://vendor.example.com', source_type: 'website' }] },
+        error: /rationale/i,
+      },
+    ];
+
+    for (const item of invalidPayloads) {
+      const resp = await dispatch(
+        {
+          id: 'req-source-proposals-invalid',
+          command: 'market-source-proposals-import',
+          args: { market_id: marketId, payload_file: writePayload(item.payload) },
+        },
+        { caller: 'host' },
+      );
+
+      expect(resp.ok).toBe(false);
+      if (!resp.ok) expect(resp.error.message).toMatch(item.error);
+    }
+  });
+
+  it('deduplicates repeated proposal imports and existing market sources', async () => {
+    const marketId = await createMarketForSourceProposals();
+
+    await dispatch(
+      {
+        id: 'req-source-add-existing',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: 'https://existing.example.com/',
+          source_type: 'website',
+          trust_tier: 'official',
+        },
+      },
+      { caller: 'host' },
+    );
+
+    const payloadFile = writePayload({
+      proposals: [
+        {
+          url: 'https://vendor.example.com/',
+          source_type: 'website',
+          trust_tier: 'official',
+          rationale: 'Official website discovered by search.',
+        },
+        {
+          url: 'https://vendor.example.com',
+          source_type: 'website',
+          trust_tier: 'official',
+          rationale: 'Duplicate search result variant.',
+        },
+        {
+          url: 'https://existing.example.com',
+          source_type: 'website',
+          trust_tier: 'official',
+          rationale: 'Already configured source.',
+        },
+      ],
+    });
+
+    const imported = await dispatch(
+      {
+        id: 'req-source-proposals-dedupe',
+        command: 'market-source-proposals-import',
+        args: { market_id: marketId, payload_file: payloadFile },
+      },
+      { caller: 'host' },
+    );
+
+    expect(imported.ok).toBe(true);
+    if (imported.ok) {
+      expect(imported.data).toMatchObject({
+        summary: { imported: 1, skipped_duplicates: 2 },
+        skipped_duplicates: [
+          expect.objectContaining({ url: 'https://vendor.example.com/', duplicate_type: 'proposal' }),
+          expect.objectContaining({ url: 'https://existing.example.com/', duplicate_type: 'source' }),
+        ],
+      });
+    }
+  });
+
+  it('accepts proposals into ordinary market sources and links existing sources without duplicating them', async () => {
+    const marketId = await createMarketForSourceProposals();
+    const payloadFile = writePayload({
+      proposals: [
+        {
+          url: 'https://vendor.example.com',
+          source_type: 'website',
+          trust_tier: 'official',
+          title: 'Vendor Example',
+          rationale: 'Official website discovered by search.',
+        },
+        {
+          url: 'https://docs.example.com',
+          source_type: 'docs',
+          trust_tier: 'official',
+          title: 'Vendor Docs',
+          rationale: 'Official documentation discovered by search.',
+        },
+      ],
+    });
+
+    const imported = await dispatch(
+      {
+        id: 'req-source-proposals-import-accept',
+        command: 'market-source-proposals-import',
+        args: { market_id: marketId, payload_file: payloadFile },
+      },
+      { caller: 'host' },
+    );
+    expect(imported.ok).toBe(true);
+    const [websiteProposal, docsProposal] = (imported as { ok: true; data: { proposals: Array<{ id: string }> } }).data
+      .proposals;
+
+    const accepted = await dispatch(
+      {
+        id: 'req-source-proposals-review-accept',
+        command: 'market-source-proposals-review',
+        args: {
+          id: websiteProposal.id,
+          status: 'accepted',
+          review_note: 'Official source accepted for crawl.',
+        },
+      },
+      { caller: 'host' },
+    );
+
+    expect(accepted.ok).toBe(true);
+    if (accepted.ok) {
+      expect(accepted.data).toMatchObject({
+        proposal: {
+          id: websiteProposal.id,
+          status: 'accepted',
+          source_id: expect.stringMatching(/^msrc_/),
+          review_note: 'Official source accepted for crawl.',
+        },
+        source: {
+          url: 'https://vendor.example.com',
+          source_type: 'website',
+          trust_tier: 'official',
+          status: 'active',
+          notes: expect.stringContaining(websiteProposal.id),
+        },
+      });
+    }
+
+    await dispatch(
+      {
+        id: 'req-source-add-existing-docs',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: 'https://docs.example.com',
+          source_type: 'docs',
+          trust_tier: 'official',
+        },
+      },
+      { caller: 'host' },
+    );
+
+    const linkedExisting = await dispatch(
+      {
+        id: 'req-source-proposals-review-existing',
+        command: 'market-source-proposals-review',
+        args: {
+          id: docsProposal.id,
+          status: 'accepted',
+          review_note: 'Existing source accepted from proposal.',
+        },
+      },
+      { caller: 'host' },
+    );
+
+    expect(linkedExisting.ok).toBe(true);
+
+    const sources = await dispatch(
+      { id: 'req-source-list-after-accept', command: 'market-sources-list', args: { market_id: marketId } },
+      { caller: 'host' },
+    );
+    expect(sources.ok).toBe(true);
+    if (sources.ok) {
+      expect((sources.data as { sources: unknown[] }).sources).toHaveLength(2);
+    }
+  });
+
+  it('rejects proposals without creating market sources and supports batch review failures', async () => {
+    const marketId = await createMarketForSourceProposals();
+    const imported = await dispatch(
+      {
+        id: 'req-source-proposals-import-reject',
+        command: 'market-source-proposals-import',
+        args: {
+          market_id: marketId,
+          payload_file: writePayload({
+            proposals: [
+              {
+                url: 'https://vendor.example.com',
+                source_type: 'website',
+                rationale: 'Ambiguous search result.',
+              },
+              {
+                url: 'https://docs.example.com',
+                source_type: 'docs',
+                rationale: 'Official docs search result.',
+              },
+            ],
+          }),
+        },
+      },
+      { caller: 'host' },
+    );
+    expect(imported.ok).toBe(true);
+    const [rejectedProposal, acceptedProposal] = (imported as { ok: true; data: { proposals: Array<{ id: string }> } })
+      .data.proposals;
+
+    const rejected = await dispatch(
+      {
+        id: 'req-source-proposals-review-reject',
+        command: 'market-source-proposals-review',
+        args: {
+          id: rejectedProposal.id,
+          status: 'rejected',
+          review_note: 'Not enough evidence this is in scope.',
+        },
+      },
+      { caller: 'host' },
+    );
+    expect(rejected.ok).toBe(true);
+    if (rejected.ok) {
+      expect(rejected.data).toMatchObject({
+        proposal: {
+          id: rejectedProposal.id,
+          status: 'rejected',
+          source_id: null,
+          review_note: 'Not enough evidence this is in scope.',
+        },
+        source: null,
+      });
+    }
+
+    const batch = await dispatch(
+      {
+        id: 'req-source-proposals-review-batch',
+        command: 'market-source-proposals-review-batch',
+        args: {
+          ids: `${acceptedProposal.id},msprop_missing`,
+          status: 'accepted',
+          review_note: 'Accepted clear official source.',
+        },
+      },
+      { caller: 'host' },
+    );
+    expect(batch.ok).toBe(true);
+    if (batch.ok) {
+      expect(batch.data).toMatchObject({
+        reviewed: [{ id: acceptedProposal.id, status: 'accepted' }],
+        failed: [{ id: 'msprop_missing', error: expect.stringContaining('not found') }],
+        summary: { requested: 2, reviewed: 1, failed: 1 },
+      });
+    }
+
+    const sources = await dispatch(
+      { id: 'req-source-list-after-reject', command: 'market-sources-list', args: { market_id: marketId } },
+      { caller: 'host' },
+    );
+    expect(sources.ok).toBe(true);
+    if (sources.ok) {
+      expect((sources.data as { sources: Array<{ url: string }> }).sources.map((source) => source.url)).toEqual([
+        'https://docs.example.com',
+      ]);
+    }
+  });
+});
+
 describe('market documents CLI resource', () => {
   it('lists and gets stored documents for agent review without re-fetching sources', async () => {
     await registerMarketsResource();
