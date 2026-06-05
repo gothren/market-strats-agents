@@ -1097,6 +1097,128 @@ function compactDocument(document: MarketDocument) {
   };
 }
 
+function normalizeSearchText(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+function searchTokenStem(value: string): string {
+  let token = value.toLowerCase();
+  if (token.length > 6 && token.endsWith('ing')) token = token.slice(0, -3);
+  else if (token.length > 5 && token.endsWith('ed')) token = token.slice(0, -2);
+  else if (token.length > 4 && token.endsWith('es')) token = token.slice(0, -2);
+  else if (token.length > 3 && token.endsWith('s')) token = token.slice(0, -1);
+  return token;
+}
+
+function searchTokens(value: string): string[] {
+  return Array.from(value.toLowerCase().matchAll(/[a-z0-9]+/g), (match) => searchTokenStem(match[0]));
+}
+
+function uniqueSearchTokens(value: string): string[] {
+  return Array.from(new Set(searchTokens(value)));
+}
+
+function excerptAroundIndex(value: string, index: number, length: number, radius = 90): string {
+  const start = Math.max(0, index - radius);
+  const end = Math.min(value.length, index + length + radius);
+  const prefix = start > 0 ? '...' : '';
+  const suffix = end < value.length ? '...' : '';
+  return `${prefix}${value.slice(start, end)}${suffix}`;
+}
+
+function tokenIndex(value: string, token: string): { index: number; length: number } | null {
+  for (const match of value.matchAll(/[a-z0-9]+/gi)) {
+    if (searchTokenStem(match[0]) === token) {
+      return { index: match.index, length: match[0].length };
+    }
+  }
+  return null;
+}
+
+function findDocumentSearchMatch(
+  document: MarketDocument,
+  query: string,
+): { excerpt: string; match_type: 'phrase' | 'tokens'; matched_terms: string[] } | null {
+  const fields = [document.content_text, document.title, document.url, document.canonical_url].filter(
+    (value): value is string => typeof value === 'string' && value.trim() !== '',
+  );
+  const needle = query.toLowerCase();
+
+  for (const field of fields) {
+    const normalized = normalizeSearchText(field);
+    const index = normalized.toLowerCase().indexOf(needle);
+    if (index === -1) continue;
+
+    return {
+      excerpt: excerptAroundIndex(normalized, index, query.length),
+      match_type: 'phrase',
+      matched_terms: [query],
+    };
+  }
+
+  const queryTokens = uniqueSearchTokens(query);
+  if (queryTokens.length === 0) return null;
+  const documentTokens = new Set(searchTokens(fields.join(' ')));
+  if (!queryTokens.every((token) => documentTokens.has(token))) return null;
+
+  for (const field of fields) {
+    const normalized = normalizeSearchText(field);
+    const firstToken = queryTokens.map((token) => tokenIndex(normalized, token)).find((match) => match !== null);
+    if (!firstToken) continue;
+
+    return {
+      excerpt: excerptAroundIndex(normalized, firstToken.index, firstToken.length),
+      match_type: 'tokens',
+      matched_terms: queryTokens,
+    };
+  }
+
+  return null;
+}
+
+register({
+  name: 'market-documents-search',
+  description: 'Search stored fetched market documents and return compact evidence excerpts.',
+  resource: 'market-documents',
+  access: 'open',
+  parseArgs: (raw) => ({
+    market_id: str(raw.market_id ?? raw['market-id'], 'market_id'),
+    query: str(raw.query, 'query'),
+    limit: positiveInt(raw.limit, 10, 'limit'),
+  }),
+  handler: async (args) => {
+    const documents = listMarketDocuments(args.market_id);
+    const fetchedDocuments = documents.filter((document) => document.status === 'fetched');
+    const matches = fetchedDocuments
+      .map((document) => ({ document, match: findDocumentSearchMatch(document, args.query) }))
+      .filter(
+        (item): item is { document: MarketDocument; match: NonNullable<ReturnType<typeof findDocumentSearchMatch>> } =>
+          item.match !== null,
+      );
+
+    return {
+      matches: matches.slice(0, args.limit).map(({ document, match }) => ({
+        ...compactDocument(document),
+        match_type: match.match_type,
+        matched_terms: match.matched_terms,
+        excerpts: [match.excerpt],
+      })),
+      summary: {
+        market_id: args.market_id,
+        query: args.query,
+        total_documents: documents.length,
+        searched_documents: fetchedDocuments.length,
+        matches: matches.length,
+        returned: Math.min(matches.length, args.limit),
+      },
+      next_actions: [
+        `ncl market-documents get <DOCUMENT_ID>`,
+        `ncl market-candidates validate --market-id ${args.market_id}`,
+      ],
+    };
+  },
+});
+
 register({
   name: 'market-documents-get',
   description: 'Get one collected evidence document.',

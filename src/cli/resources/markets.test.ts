@@ -2356,6 +2356,196 @@ describe('market documents CLI resource', () => {
       expect(data.documents[0].fetched_at).toBeUndefined();
     }
   });
+
+  it('searches stored fetched documents with compact evidence excerpts', async () => {
+    await registerMarketsResource();
+
+    const created = await dispatch(
+      {
+        id: 'req-create-market-for-document-search',
+        command: 'markets-create',
+        args: { name: 'AI Security', description: null },
+      },
+      { caller: 'host' },
+    );
+    expect(created.ok).toBe(true);
+    const marketId = (created as { ok: true; data: { market: { id: string } } }).data.market.id;
+
+    await dispatch(
+      {
+        id: 'req-source-add-search-1',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: 'https://example.com/prompt-injection',
+          source_type: 'exact_url',
+          trust_tier: 'official',
+        },
+      },
+      { caller: 'host' },
+    );
+    await dispatch(
+      {
+        id: 'req-source-add-search-2',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: 'https://example.com/data-security',
+          source_type: 'exact_url',
+          trust_tier: 'official',
+        },
+      },
+      { caller: 'host' },
+    );
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url === 'https://example.com/prompt-injection') {
+          return new Response(
+            '<html><head><title>Prompt Injection Protection</title></head><body>The product detects prompt injection attempts in AI applications and routes evidence to security review workflows.</body></html>',
+            { status: 200, headers: { 'content-type': 'text/html' } },
+          );
+        }
+        return new Response(
+          '<html><head><title>Data Security</title></head><body>The product monitors sensitive data exposure and policy enforcement for AI workloads.</body></html>',
+          { status: 200, headers: { 'content-type': 'text/html' } },
+        );
+      }),
+    );
+
+    await dispatch(
+      {
+        id: 'req-collect-for-document-search',
+        command: 'market-sources-collect',
+        args: { market_id: marketId },
+      },
+      { caller: 'host' },
+    );
+
+    const searched = await dispatch(
+      {
+        id: 'req-documents-search',
+        command: 'market-documents-search',
+        args: { market_id: marketId, query: 'PROMPT injection' },
+      },
+      { caller: 'host' },
+    );
+
+    expect(searched.ok).toBe(true);
+    if (searched.ok) {
+      const data = searched.data as { matches: Array<Record<string, unknown>>; summary: Record<string, unknown> };
+      expect(data.summary).toMatchObject({
+        total_documents: 2,
+        searched_documents: 2,
+        matches: 1,
+        query: 'PROMPT injection',
+      });
+      expect(data.matches).toHaveLength(1);
+      expect(data.matches[0]).toMatchObject({
+        id: expect.stringMatching(/^mdoc_/),
+        market_id: marketId,
+        title: 'Prompt Injection Protection',
+        match_type: 'phrase',
+        status: 'fetched',
+        url: 'https://example.com/prompt-injection',
+        excerpts: [expect.stringContaining('prompt injection')],
+      });
+      expect(data.matches[0].content_text).toBeUndefined();
+      expect(data.matches[0].metadata_json).toBeUndefined();
+    }
+  });
+
+  it('matches normalized query tokens when product wording uses variants', async () => {
+    await registerMarketsResource();
+
+    const created = await dispatch(
+      {
+        id: 'req-create-market-for-token-search',
+        command: 'markets-create',
+        args: { name: 'AI Security', description: null },
+      },
+      { caller: 'host' },
+    );
+    expect(created.ok).toBe(true);
+    const marketId = (created as { ok: true; data: { market: { id: string } } }).data.market.id;
+
+    await dispatch(
+      {
+        id: 'req-source-add-token-search',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: 'https://example.com/runtime',
+          source_type: 'exact_url',
+          trust_tier: 'official',
+        },
+      },
+      { caller: 'host' },
+    );
+
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(
+            '<html><head><title>Runtime Visibility</title></head><body>The platform runtime monitors agent behavior, detects unsafe tool calls, and blocks prompt injection attempts.</body></html>',
+            { status: 200, headers: { 'content-type': 'text/html' } },
+          ),
+        ),
+    );
+
+    await dispatch(
+      {
+        id: 'req-collect-for-token-search',
+        command: 'market-sources-collect',
+        args: { market_id: marketId },
+      },
+      { caller: 'host' },
+    );
+
+    const searched = await dispatch(
+      {
+        id: 'req-documents-token-search',
+        command: 'market-documents-search',
+        args: { market_id: marketId, query: 'runtime monitoring' },
+      },
+      { caller: 'host' },
+    );
+
+    expect(searched.ok).toBe(true);
+    if (searched.ok) {
+      const data = searched.data as { matches: Array<Record<string, unknown>>; summary: Record<string, unknown> };
+      expect(data.summary).toMatchObject({
+        matches: 1,
+        returned: 1,
+        query: 'runtime monitoring',
+      });
+      expect(data.matches[0]).toMatchObject({
+        title: 'Runtime Visibility',
+        match_type: 'tokens',
+        matched_terms: ['runtime', 'monitor'],
+        excerpts: [expect.stringContaining('runtime monitors')],
+      });
+      expect(data.matches[0].content_text).toBeUndefined();
+    }
+  });
+
+  it('requires a query when searching stored documents', async () => {
+    await registerMarketsResource();
+
+    const resp = await dispatch(
+      { id: 'req-documents-search-invalid', command: 'market-documents-search', args: { market_id: 'mkt_missing' } },
+      { caller: 'host' },
+    );
+
+    expect(resp.ok).toBe(false);
+    if (!resp.ok) {
+      expect(resp.error.code).toBe('invalid-args');
+      expect(resp.error.message).toMatch(/query/i);
+    }
+  });
 });
 
 describe('market candidates CLI resource', () => {

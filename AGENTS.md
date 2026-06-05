@@ -253,6 +253,24 @@ pnpm ncl market-documents list --market-id <MARKET_ID> --compact --json
 pnpm ncl market-documents get <DOCUMENT_ID> --json
 ```
 
+When many documents exist, search stored evidence before opening full documents:
+
+```bash
+pnpm ncl market-documents search --market-id <MARKET_ID> --query "prompt injection" --json
+pnpm ncl market-documents search --market-id <MARKET_ID> --query "runtime monitoring" --limit 5 --json
+```
+
+Search only covers stored fetched documents. Use returned document ids and excerpts to decide which full documents to inspect and cite.
+
+Search concept variants instead of relying on one analyst phrase. Product pages may use verbs, product wording, domain objects, or risk terms:
+
+- noun/verb variants: `monitoring`, `monitor`, `monitors`, `detect`, `detects`
+- product wording: `visibility`, `real-time`, `block`, `policy enforcement`
+- domain objects: `tool calls`, `agent behavior`, `guardrails`
+- risk terms: `prompt injection`, `PII`, `secrets`, `data leakage`
+
+Document search does light token normalization, so `monitoring` can match `monitors`, but agents should still try nearby product wording when a query returns no matches.
+
 Create a local JSON payload with typed candidates. Each candidate must include evidence linked to stored document ids:
 
 ```json
