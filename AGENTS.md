@@ -278,7 +278,19 @@ Create a local JSON payload with typed candidates. Each candidate must include e
 
 Valid candidate types are `company`, `product`, `problem`, `capability`, `category`, and `claim`. Valid confidence values are `low`, `medium`, and `high`.
 
-Import candidates in batch. Use `--dedupe` by default for agent-generated extraction payloads so repeated extraction runs do not create duplicate candidates:
+Validate the payload before importing. Use `--dedupe` by default for agent-generated extraction payloads so repeated extraction runs flag duplicates instead of creating duplicate candidates:
+
+```bash
+pnpm ncl market-candidates validate \
+  --market-id <MARKET_ID> \
+  --payload-file <JSON_FILE> \
+  --dedupe \
+  --json
+```
+
+If validation returns `valid: false`, fix the JSON or evidence references before importing. If validation returns duplicate candidates, treat them as already represented unless the user explicitly wants another candidate.
+
+Import candidates in batch:
 
 ```bash
 pnpm ncl market-candidates import \

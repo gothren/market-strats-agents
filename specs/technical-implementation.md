@@ -174,6 +174,7 @@ Implemented workflows:
 - import/list/get/review source proposals and accept them into market sources
 - collect `exact_url` evidence into documents
 - list/get documents, including compact list output
+- validate market candidate JSON without mutating state
 - import market candidates from JSON
 - dedupe candidate imports when requested
 - list/filter candidates, including compact output

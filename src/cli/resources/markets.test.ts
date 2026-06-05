@@ -2468,6 +2468,169 @@ describe('market candidates CLI resource', () => {
     }
   });
 
+  it('validates candidate payloads without importing candidates', async () => {
+    const { marketId, documentId } = await createDocumentFixture();
+
+    const existingImport = await dispatch(
+      {
+        id: 'req-candidates-import-existing-for-validate',
+        command: 'market-candidates-import',
+        args: {
+          market_id: marketId,
+          'payload-file': writePayload({
+            candidates: [
+              {
+                candidate_type: 'company',
+                name: 'Example Vendor',
+                confidence: 'medium',
+                evidence: [{ document_id: documentId, quote: 'Vendor', note: null }],
+              },
+            ],
+          }),
+        },
+      },
+      { caller: 'host' },
+    );
+    expect(existingImport.ok).toBe(true);
+
+    const validate = await dispatch(
+      {
+        id: 'req-candidates-validate',
+        command: 'market-candidates-validate',
+        args: {
+          market_id: marketId,
+          'payload-file': writePayload({
+            candidates: [
+              {
+                candidate_type: 'company',
+                name: '  example   vendor  ',
+                confidence: 'medium',
+                evidence: [{ document_id: documentId, quote: 'Vendor', note: null }],
+              },
+              {
+                candidate_type: 'capability',
+                name: 'Prompt injection detection',
+                summary: 'Detects prompt injection attempts.',
+                confidence: 'high',
+                evidence: [{ document_id: documentId, quote: 'prompt injection', note: null }],
+              },
+            ],
+          }),
+          dedupe: true,
+        },
+      },
+      { caller: 'host' },
+    );
+
+    expect(validate.ok).toBe(true);
+    if (validate.ok) {
+      expect(validate.data).toMatchObject({
+        valid: true,
+        summary: {
+          total: 2,
+          importable: 1,
+          duplicate_count: 1,
+          error_count: 0,
+          by_type: { company: 1, capability: 1 },
+          by_confidence: { medium: 1, high: 1 },
+        },
+        importable_candidates: [
+          {
+            candidate_type: 'capability',
+            name: 'Prompt injection detection',
+            evidence_count: 1,
+          },
+        ],
+        duplicate_candidates: [
+          {
+            candidate_type: 'company',
+            name: 'example vendor',
+            existing_id: expect.stringMatching(/^mcand_/),
+          },
+        ],
+        errors: [],
+        next_actions: expect.arrayContaining([expect.stringContaining('market-candidates import')]),
+      });
+    }
+
+    const listed = await dispatch(
+      { id: 'req-candidates-list-after-validate', command: 'market-candidates-list', args: { market_id: marketId } },
+      { caller: 'host' },
+    );
+    expect(listed.ok).toBe(true);
+    if (listed.ok) {
+      expect((listed.data as { candidates: unknown[] }).candidates).toHaveLength(1);
+    }
+  });
+
+  it('reports candidate validation errors without creating an extraction run', async () => {
+    const { marketId, documentId } = await createDocumentFixture();
+    const other = await createDocumentFixture();
+
+    const validate = await dispatch(
+      {
+        id: 'req-candidates-validate-invalid',
+        command: 'market-candidates-validate',
+        args: {
+          market_id: marketId,
+          'payload-file': writePayload({
+            candidates: [
+              {
+                candidate_type: 'company',
+                name: 'Unsupported Vendor',
+                confidence: 'low',
+                evidence: [],
+              },
+              {
+                candidate_type: 'capability',
+                name: 'Cross-market evidence',
+                confidence: 'medium',
+                evidence: [{ document_id: other.documentId, quote: 'Other market evidence', note: null }],
+              },
+              {
+                candidate_type: 'claim',
+                name: 'Supported claim',
+                confidence: 'medium',
+                evidence: [{ document_id: documentId, quote: 'Vendor', note: null }],
+              },
+            ],
+          }),
+        },
+      },
+      { caller: 'host' },
+    );
+
+    expect(validate.ok).toBe(true);
+    if (validate.ok) {
+      expect(validate.data).toMatchObject({
+        valid: false,
+        summary: {
+          total: 3,
+          importable: 1,
+          duplicate_count: 0,
+          error_count: 2,
+        },
+        errors: [
+          { index: 0, name: 'Unsupported Vendor', message: expect.stringMatching(/evidence/i) },
+          { index: 1, name: 'Cross-market evidence', message: expect.stringMatching(/different market/i) },
+        ],
+      });
+    }
+
+    const summary = await dispatch(
+      {
+        id: 'req-candidates-summary-after-validate',
+        command: 'market-candidates-summary',
+        args: { market_id: marketId },
+      },
+      { caller: 'host' },
+    );
+    expect(summary.ok).toBe(true);
+    if (summary.ok) {
+      expect(summary.data).toMatchObject({ total: 0, latest_extraction_run: null });
+    }
+  });
+
   it('rejects candidate import when evidence is missing', async () => {
     const { marketId } = await createDocumentFixture();
     const payloadFile = writePayload({

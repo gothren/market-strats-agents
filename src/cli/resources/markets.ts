@@ -1256,6 +1256,123 @@ function countBy<T extends string>(values: T[]): Record<T, number> {
   );
 }
 
+function candidatePayloadPreview(candidate: CandidatePayloadItem) {
+  return {
+    candidate_type: candidate.candidate_type,
+    name: normalizeCandidateDisplayName(candidate.name),
+    summary: candidate.summary,
+    confidence: candidate.confidence,
+    evidence_count: candidate.evidence.length,
+  };
+}
+
+function validateCandidateEvidence(
+  marketId: string,
+  candidate: CandidatePayloadItem,
+  index: number,
+): Array<{ index: number; candidate_type: MarketCandidateType; name: string; message: string }> {
+  if (candidate.evidence.length === 0) {
+    return [
+      {
+        index,
+        candidate_type: candidate.candidate_type,
+        name: normalizeCandidateDisplayName(candidate.name),
+        message: 'candidate evidence must include at least one market document',
+      },
+    ];
+  }
+
+  const errors: Array<{ index: number; candidate_type: MarketCandidateType; name: string; message: string }> = [];
+  for (const item of candidate.evidence) {
+    const document = getMarketDocument(item.document_id);
+    if (!document) {
+      errors.push({
+        index,
+        candidate_type: candidate.candidate_type,
+        name: normalizeCandidateDisplayName(candidate.name),
+        message: `candidate evidence document not found: ${item.document_id}`,
+      });
+      continue;
+    }
+    if (document.market_id !== marketId) {
+      errors.push({
+        index,
+        candidate_type: candidate.candidate_type,
+        name: normalizeCandidateDisplayName(candidate.name),
+        message: `candidate evidence document belongs to a different market: ${item.document_id}`,
+      });
+    }
+  }
+  return errors;
+}
+
+register({
+  name: 'market-candidates-validate',
+  description: 'Validate an evidence-backed extraction candidate payload without importing it.',
+  resource: 'market-candidates',
+  access: 'open',
+  parseArgs: (raw) => ({
+    market_id: str(raw.market_id ?? raw['market-id'], 'market_id'),
+    payload_file: str(raw.payload_file ?? raw['payload-file'], 'payload_file'),
+    dedupe: bool(raw.dedupe),
+  }),
+  handler: async (args) => {
+    const market = getMarket(args.market_id);
+    if (!market) throw new Error(`market not found: ${args.market_id}`);
+
+    const candidates = parseCandidatePayload(args.payload_file);
+    const errors: Array<{ index: number; candidate_type: MarketCandidateType; name: string; message: string }> = [];
+    const importable_candidates: Array<ReturnType<typeof candidatePayloadPreview>> = [];
+    const duplicate_candidates: Array<ReturnType<typeof candidatePayloadPreview> & { existing_id: string }> = [];
+
+    candidates.forEach((candidate, index) => {
+      const evidenceErrors = validateCandidateEvidence(args.market_id, candidate, index);
+      if (evidenceErrors.length > 0) {
+        errors.push(...evidenceErrors);
+        return;
+      }
+
+      const duplicate = args.dedupe
+        ? findDuplicateMarketCandidate(args.market_id, candidate.candidate_type, candidate.name)
+        : undefined;
+      if (duplicate) {
+        duplicate_candidates.push({
+          ...candidatePayloadPreview(candidate),
+          existing_id: duplicate.id,
+        });
+        return;
+      }
+
+      importable_candidates.push(candidatePayloadPreview(candidate));
+    });
+
+    return {
+      valid: errors.length === 0,
+      summary: {
+        total: candidates.length,
+        importable: importable_candidates.length,
+        duplicate_count: duplicate_candidates.length,
+        error_count: errors.length,
+        by_type: countBy(candidates.map((candidate) => candidate.candidate_type)),
+        by_confidence: countBy(candidates.map((candidate) => candidate.confidence)),
+      },
+      importable_candidates,
+      duplicate_candidates,
+      errors,
+      next_actions:
+        errors.length === 0
+          ? [
+              `ncl market-candidates import --market-id ${args.market_id} --payload-file ${args.payload_file}${
+                args.dedupe ? ' --dedupe' : ''
+              }`,
+            ]
+          : [
+              `Fix validation errors and rerun ncl market-candidates validate --market-id ${args.market_id} --payload-file ${args.payload_file}`,
+            ],
+    };
+  },
+});
+
 register({
   name: 'market-candidates-import',
   description: 'Import evidence-backed extraction candidates from a batch JSON payload file.',
