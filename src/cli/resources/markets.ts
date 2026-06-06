@@ -26,6 +26,7 @@ import {
   reviewMarketCandidate,
   reviewMarketSourceProposal,
   summarizeMarketCandidates,
+  updateMarketCandidate,
   upsertMarketBoundary,
   type MarketCandidate,
   type MarketCandidateConfidence,
@@ -1293,6 +1294,12 @@ function parseCandidatePayload(path: string): CandidatePayloadItem[] {
   return payload.candidates.map((candidate, index) => normalizeCandidate(candidate, index));
 }
 
+function parseCandidateUpdatePayload(path: string): CandidatePayloadItem {
+  const payload = parseJsonFile(path);
+  const record = asRecord(payload, 'candidate update payload');
+  return normalizeCandidate(record.candidate ?? record, 0);
+}
+
 function candidateWithParsedJson(candidate: MarketCandidate) {
   return {
     ...candidate,
@@ -1376,6 +1383,251 @@ function countBy<T extends string>(values: T[]): Record<T, number> {
     },
     {} as Record<T, number>,
   );
+}
+
+type CandidateAuditSeverity = 'low' | 'medium' | 'high';
+type CandidateAuditReason =
+  | 'low_confidence'
+  | 'missing_summary'
+  | 'short_summary'
+  | 'generic_name'
+  | 'single_evidence'
+  | 'missing_evidence_quote'
+  | 'weak_evidence_quote'
+  | 'evidence_document_missing'
+  | 'evidence_document_not_fetched'
+  | 'evidence_quote_not_found'
+  | 'duplicate_name';
+
+const CANDIDATE_AUDIT_SEVERITIES = ['low', 'medium', 'high'] as const;
+const CANDIDATE_AUDIT_REASONS = [
+  'low_confidence',
+  'missing_summary',
+  'short_summary',
+  'generic_name',
+  'single_evidence',
+  'missing_evidence_quote',
+  'weak_evidence_quote',
+  'evidence_document_missing',
+  'evidence_document_not_fetched',
+  'evidence_quote_not_found',
+  'duplicate_name',
+] as const;
+
+const GENERIC_CANDIDATE_NAMES = new Set([
+  'ai',
+  'ai security',
+  'application',
+  'compliance',
+  'dashboard',
+  'platform',
+  'product',
+  'security',
+  'solution',
+  'tool',
+]);
+
+function normalizedCandidateKey(candidate: MarketCandidate): string {
+  return `${candidate.candidate_type}:${candidate.name.trim().toLowerCase().replace(/\s+/g, ' ')}`;
+}
+
+function normalizedQuoteText(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function candidateIsReadyForReview(findings: Array<{ severity: CandidateAuditSeverity }>): boolean {
+  return findings.every((finding) => finding.severity === 'low');
+}
+
+function auditFinding(input: {
+  candidate: MarketCandidate;
+  severity: CandidateAuditSeverity;
+  reason: CandidateAuditReason;
+  message: string;
+  suggested_action: string;
+  evidence_document_id?: string;
+  related_candidate_ids?: string[];
+}) {
+  return {
+    candidate_id: input.candidate.id,
+    candidate_type: input.candidate.candidate_type,
+    name: input.candidate.name,
+    status: input.candidate.status,
+    severity: input.severity,
+    reason: input.reason,
+    message: input.message,
+    suggested_action: input.suggested_action,
+    ...(input.evidence_document_id ? { evidence_document_id: input.evidence_document_id } : {}),
+    ...(input.related_candidate_ids ? { related_candidate_ids: input.related_candidate_ids } : {}),
+  };
+}
+
+function auditCandidate(candidate: MarketCandidate, duplicatesById: Map<string, string[]>) {
+  const evidence = JSON.parse(candidate.evidence_json) as MarketCandidateEvidence[];
+  const findings: Array<ReturnType<typeof auditFinding>> = [];
+  const summary = candidate.summary?.trim() ?? '';
+
+  if (candidate.confidence === 'low') {
+    findings.push(
+      auditFinding({
+        candidate,
+        severity: 'low',
+        reason: 'low_confidence',
+        message: 'Candidate confidence is low.',
+        suggested_action: 'Inspect the evidence and consider improving, rejecting, or leaving it for user review.',
+      }),
+    );
+  }
+
+  if (summary === '') {
+    findings.push(
+      auditFinding({
+        candidate,
+        severity: 'medium',
+        reason: 'missing_summary',
+        message: 'Candidate has no summary.',
+        suggested_action: 'Inspect evidence and add a short evidence-backed summary before review.',
+      }),
+    );
+  } else if (summary.length < 30) {
+    findings.push(
+      auditFinding({
+        candidate,
+        severity: 'low',
+        reason: 'short_summary',
+        message: 'Candidate summary is very short.',
+        suggested_action: 'Inspect evidence and expand the summary if the candidate is worth keeping.',
+      }),
+    );
+  }
+
+  if (GENERIC_CANDIDATE_NAMES.has(candidate.name.trim().toLowerCase().replace(/\s+/g, ' '))) {
+    findings.push(
+      auditFinding({
+        candidate,
+        severity: 'medium',
+        reason: 'generic_name',
+        message: 'Candidate name is generic.',
+        suggested_action:
+          'Rename the candidate to the specific company, product, problem, capability, category, or claim.',
+      }),
+    );
+  }
+
+  if (evidence.length === 1) {
+    findings.push(
+      auditFinding({
+        candidate,
+        severity: 'low',
+        reason: 'single_evidence',
+        message: 'Candidate has only one evidence reference.',
+        suggested_action: 'Consider finding another supporting document or keep this candidate for closer review.',
+      }),
+    );
+  }
+
+  for (const item of evidence) {
+    const quote = item.quote?.trim() ?? '';
+    const document = getMarketDocument(item.document_id);
+    if (!document) {
+      findings.push(
+        auditFinding({
+          candidate,
+          severity: 'high',
+          reason: 'evidence_document_missing',
+          message: `Evidence document was not found: ${item.document_id}.`,
+          suggested_action: 'Remove the evidence reference or validate/import the candidate payload again.',
+          evidence_document_id: item.document_id,
+        }),
+      );
+      continue;
+    }
+    if (document.status !== 'fetched') {
+      findings.push(
+        auditFinding({
+          candidate,
+          severity: 'medium',
+          reason: 'evidence_document_not_fetched',
+          message: `Evidence document is not fetched: ${item.document_id}.`,
+          suggested_action: 'Use a fetched evidence document or recollect the source before review.',
+          evidence_document_id: item.document_id,
+        }),
+      );
+    }
+    if (quote === '') {
+      findings.push(
+        auditFinding({
+          candidate,
+          severity: 'medium',
+          reason: 'missing_evidence_quote',
+          message: 'Candidate evidence has no quote.',
+          suggested_action: 'Use market-documents search/get to add a short supporting quote.',
+          evidence_document_id: item.document_id,
+        }),
+      );
+    } else {
+      if (quote.length < 20) {
+        findings.push(
+          auditFinding({
+            candidate,
+            severity: 'low',
+            reason: 'weak_evidence_quote',
+            message: 'Candidate evidence quote is very short.',
+            suggested_action: 'Use market-documents get to replace it with a more specific supporting excerpt.',
+            evidence_document_id: item.document_id,
+          }),
+        );
+      }
+      if (!normalizedQuoteText(document.content_text).includes(normalizedQuoteText(quote))) {
+        findings.push(
+          auditFinding({
+            candidate,
+            severity: 'medium',
+            reason: 'evidence_quote_not_found',
+            message: 'Candidate evidence quote was not found in the stored document text.',
+            suggested_action: 'Inspect the document and update the quote so it exactly supports the candidate.',
+            evidence_document_id: item.document_id,
+          }),
+        );
+      }
+    }
+  }
+
+  const related = duplicatesById.get(candidate.id) ?? [];
+  if (related.length > 0) {
+    findings.push(
+      auditFinding({
+        candidate,
+        severity: 'medium',
+        reason: 'duplicate_name',
+        message: 'Candidate has another candidate with the same normalized name and type.',
+        suggested_action: 'Compare related candidates and reject or consolidate duplicates before review.',
+        related_candidate_ids: related,
+      }),
+    );
+  }
+
+  return findings;
+}
+
+function duplicateCandidateIds(candidates: MarketCandidate[]): Map<string, string[]> {
+  const groups = new Map<string, MarketCandidate[]>();
+  for (const candidate of candidates) {
+    const key = normalizedCandidateKey(candidate);
+    groups.set(key, [...(groups.get(key) ?? []), candidate]);
+  }
+
+  const duplicates = new Map<string, string[]>();
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    for (const candidate of group) {
+      duplicates.set(
+        candidate.id,
+        group.filter((item) => item.id !== candidate.id).map((item) => item.id),
+      );
+    }
+  }
+  return duplicates;
 }
 
 function candidatePayloadPreview(candidate: CandidatePayloadItem) {
@@ -1606,6 +1858,85 @@ register({
 });
 
 register({
+  name: 'market-candidates-audit',
+  description: 'Audit proposed market candidates for deterministic quality guardrails.',
+  resource: 'market-candidates',
+  access: 'open',
+  parseArgs: (raw) => ({
+    market_id: str(raw.market_id ?? raw['market-id'], 'market_id'),
+    status:
+      raw.status === undefined || raw.status === null || raw.status === ''
+        ? ('proposed' as MarketCandidateStatus)
+        : (requiredEnum(raw.status, CANDIDATE_STATUSES, 'status') as MarketCandidateStatus),
+    severity:
+      raw.severity === undefined || raw.severity === null || raw.severity === ''
+        ? null
+        : (requiredEnum(raw.severity, CANDIDATE_AUDIT_SEVERITIES, 'severity') as CandidateAuditSeverity),
+    reason:
+      raw.reason === undefined || raw.reason === null || raw.reason === ''
+        ? null
+        : (requiredEnum(raw.reason, CANDIDATE_AUDIT_REASONS, 'reason') as CandidateAuditReason),
+    ready: raw.ready === undefined || raw.ready === null || raw.ready === '' ? null : bool(raw.ready),
+  }),
+  handler: async (args) => {
+    const market = getMarket(args.market_id);
+    if (!market) throw new Error(`market not found: ${args.market_id}`);
+
+    const candidates = listMarketCandidates(args.market_id, { status: args.status });
+    const duplicatesById = duplicateCandidateIds(candidates);
+    const candidatesWithFindings = candidates.map((candidate) => {
+      const findings = auditCandidate(candidate, duplicatesById);
+      return { candidate, findings, ready_for_review: candidateIsReadyForReview(findings) };
+    });
+    const visibleCandidates = candidatesWithFindings
+      .map((item) => ({
+        ...item,
+        visible_findings: item.findings.filter((finding) => {
+          if (args.severity && finding.severity !== args.severity) return false;
+          if (args.reason && finding.reason !== args.reason) return false;
+          return true;
+        }),
+      }))
+      .filter((item) => {
+        if (args.ready !== null && item.ready_for_review !== args.ready) return false;
+        if ((args.severity || args.reason) && item.visible_findings.length === 0) return false;
+        return true;
+      });
+    const findings = visibleCandidates.flatMap((item) => item.visible_findings);
+
+    return {
+      summary: {
+        market_id: args.market_id,
+        status: args.status,
+        total: visibleCandidates.length,
+        ready_for_review: visibleCandidates.filter((item) => item.ready_for_review).length,
+        needs_attention: visibleCandidates.filter((item) => !item.ready_for_review).length,
+        findings: findings.length,
+        by_reason: countBy(findings.map((finding) => finding.reason)),
+        by_severity: countBy(findings.map((finding) => finding.severity)),
+        filters: {
+          severity: args.severity,
+          reason: args.reason,
+          ready: args.ready,
+        },
+      },
+      candidates: visibleCandidates.map(({ candidate, visible_findings, ready_for_review }) => ({
+        ...compactCandidate(candidate),
+        ready_for_review,
+        finding_count: visible_findings.length,
+        reasons: Array.from(new Set(visible_findings.map((finding) => finding.reason))),
+      })),
+      findings,
+      next_actions: [
+        `ncl market-candidates list --market-id ${args.market_id} --status ${args.status} --compact`,
+        `ncl market-candidates get <CANDIDATE_ID>`,
+        `ncl market-documents search --market-id ${args.market_id} --query "..."`,
+      ],
+    };
+  },
+});
+
+register({
   name: 'market-candidates-map',
   description: 'Compute a read-only market overview from accepted candidates.',
   resource: 'market-candidates',
@@ -1651,6 +1982,44 @@ register({
       next_actions: [
         `ncl market-candidates review ${candidate.id} --status accepted --review-note "..."`,
         `ncl markets get ${candidate.market_id}`,
+      ],
+    };
+  },
+});
+
+register({
+  name: 'market-candidates-update',
+  description: 'Replace one candidate extracted-content payload without changing review status.',
+  resource: 'market-candidates',
+  access: 'open',
+  parseArgs: (raw) => ({
+    id: str(raw.id, 'id'),
+    payload_file: str(raw.payload_file ?? raw['payload-file'], 'payload_file'),
+  }),
+  handler: async (args) => {
+    const existing = getMarketCandidate(args.id);
+    if (!existing) throw new Error(`market candidate not found: ${args.id}`);
+
+    const payload = parseCandidateUpdatePayload(args.payload_file);
+    const evidenceErrors = validateCandidateEvidence(existing.market_id, payload, 0);
+    if (evidenceErrors.length > 0) {
+      throw new Error(evidenceErrors.map((error) => error.message).join('; '));
+    }
+
+    const candidate = updateMarketCandidate(args.id, {
+      candidate_type: payload.candidate_type,
+      name: payload.name,
+      summary: payload.summary,
+      confidence: payload.confidence,
+      evidence: payload.evidence,
+      metadata: payload.metadata,
+    });
+
+    return {
+      candidate: candidateWithParsedJson(candidate),
+      next_actions: [
+        `ncl market-candidates audit --market-id ${candidate.market_id}`,
+        `ncl market-candidates get ${candidate.id}`,
       ],
     };
   },

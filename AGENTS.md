@@ -318,6 +318,62 @@ pnpm ncl market-candidates import \
   --json
 ```
 
+Audit proposed candidates before asking the user to accept them:
+
+```bash
+pnpm ncl market-candidates audit --market-id <MARKET_ID> --json
+```
+
+The audit is deterministic guardrails, not semantic judgment. Treat findings as a work queue: inspect evidence, improve quotes/summaries, update candidates whose identity is right, reject weak candidates, or ask the user. Common findings include low confidence, generic names, short/missing summaries, missing/short quotes, quotes not found in stored document text, single-evidence candidates, and duplicate normalized names.
+
+Low-severity findings are advisory and do not block `ready_for_review`. Medium/high findings require attention before asking the user to accept the candidate.
+
+Useful audit filters:
+
+```bash
+pnpm ncl market-candidates audit --market-id <MARKET_ID> --ready false --json
+pnpm ncl market-candidates audit --market-id <MARKET_ID> --severity medium --json
+pnpm ncl market-candidates audit --market-id <MARKET_ID> --reason evidence_quote_not_found --json
+```
+
+Quote matching is case-insensitive and whitespace-normalized. Punctuation and wording still need to match the stored `content_text`; use `market-documents get` or `market-documents search` to copy a supporting quote.
+
+To fix a candidate whose identity is right but fields/evidence are weak, write a replacement candidate object to a temporary JSON file such as `/private/tmp/<market>-candidate-update.json`:
+
+```json
+{
+  "candidate": {
+    "candidate_type": "capability",
+    "name": "Runtime prompt injection detection",
+    "summary": "Detects prompt injection attempts in deployed AI application workflows.",
+    "confidence": "medium",
+    "evidence": [
+      {
+        "document_id": "<DOCUMENT_ID>",
+        "quote": "<QUOTE COPIED FROM STORED DOCUMENT>",
+        "note": "Why this quote supports the candidate."
+      }
+    ],
+    "metadata": {
+      "source": "agent-correction"
+    }
+  }
+}
+```
+
+Then run:
+
+```bash
+pnpm ncl market-candidates update --id <CANDIDATE_ID> --payload-file /private/tmp/<market>-candidate-update.json --json
+pnpm ncl market-candidates audit --market-id <MARKET_ID> --json
+```
+
+If the candidate itself is bad, reject it instead of updating:
+
+```bash
+pnpm ncl market-candidates review <CANDIDATE_ID> --status rejected --review-note "Unsupported by evidence." --json
+```
+
 Review candidates:
 
 ```bash

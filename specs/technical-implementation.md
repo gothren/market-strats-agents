@@ -178,6 +178,8 @@ Implemented workflows:
 - validate market candidate JSON without mutating state
 - import market candidates from JSON
 - dedupe candidate imports when requested
+- audit candidates with deterministic quality guardrails
+- update candidate extracted content without changing review status
 - list/filter candidates, including compact output
 - summarize candidate status/type/confidence counts
 - review candidates singly or in batches

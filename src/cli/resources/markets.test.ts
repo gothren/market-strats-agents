@@ -3085,6 +3085,292 @@ describe('market candidates CLI resource', () => {
     }
   });
 
+  it('audits proposed candidates for deterministic quality guardrails', async () => {
+    const { marketId, documentId } = await createDocumentFixture();
+    const payloadFile = writePayload({
+      candidates: [
+        {
+          candidate_type: 'company',
+          name: 'Platform',
+          summary: 'AI',
+          confidence: 'low',
+          evidence: [{ document_id: documentId, quote: null, note: null }],
+        },
+        {
+          candidate_type: 'capability',
+          name: 'Prompt injection detection',
+          summary: 'Detects prompt injection attempts in AI application workflows.',
+          confidence: 'high',
+          evidence: [{ document_id: documentId, quote: 'prompt injection', note: null }],
+        },
+        {
+          candidate_type: 'capability',
+          name: '  prompt   injection   detection ',
+          summary: 'Detects prompt injection attempts in AI application workflows.',
+          confidence: 'medium',
+          evidence: [{ document_id: documentId, quote: 'not present in the stored document', note: null }],
+        },
+      ],
+    });
+
+    const imported = await dispatch(
+      {
+        id: 'req-candidates-import-audit',
+        command: 'market-candidates-import',
+        args: { market_id: marketId, 'payload-file': payloadFile },
+      },
+      { caller: 'host' },
+    );
+    expect(imported.ok).toBe(true);
+    const candidates = (imported as { ok: true; data: { candidates: Array<{ id: string; name: string }> } }).data
+      .candidates;
+
+    const audit = await dispatch(
+      {
+        id: 'req-candidates-audit',
+        command: 'market-candidates-audit',
+        args: { market_id: marketId },
+      },
+      { caller: 'host' },
+    );
+
+    expect(audit.ok).toBe(true);
+    if (audit.ok) {
+      const data = audit.data as {
+        summary: Record<string, unknown>;
+        candidates: Array<Record<string, unknown>>;
+        findings: Array<Record<string, unknown>>;
+      };
+      expect(data.summary).toMatchObject({
+        market_id: marketId,
+        status: 'proposed',
+        total: 3,
+        ready_for_review: 0,
+        needs_attention: 3,
+        findings: expect.any(Number),
+      });
+      expect(data.candidates).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: candidates[0].id,
+            finding_count: 5,
+            ready_for_review: false,
+            reasons: expect.arrayContaining([
+              'low_confidence',
+              'generic_name',
+              'short_summary',
+              'single_evidence',
+              'missing_evidence_quote',
+            ]),
+          }),
+          expect.objectContaining({
+            id: candidates[1].id,
+            finding_count: 3,
+            ready_for_review: false,
+            reasons: expect.arrayContaining(['single_evidence', 'weak_evidence_quote', 'duplicate_name']),
+          }),
+          expect.objectContaining({
+            id: candidates[2].id,
+            finding_count: 3,
+            ready_for_review: false,
+            reasons: expect.arrayContaining(['single_evidence', 'evidence_quote_not_found', 'duplicate_name']),
+          }),
+        ]),
+      );
+      expect(data.findings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            candidate_id: candidates[0].id,
+            severity: 'medium',
+            reason: 'missing_evidence_quote',
+            suggested_action: expect.stringContaining('market-documents'),
+          }),
+          expect.objectContaining({
+            candidate_id: candidates[2].id,
+            severity: 'medium',
+            reason: 'evidence_quote_not_found',
+            evidence_document_id: documentId,
+          }),
+          expect.objectContaining({
+            candidate_id: candidates[1].id,
+            severity: 'medium',
+            reason: 'duplicate_name',
+            related_candidate_ids: expect.arrayContaining([candidates[2].id]),
+          }),
+        ]),
+      );
+      expect(data.summary).toMatchObject({
+        by_reason: expect.objectContaining({
+          duplicate_name: 2,
+          single_evidence: 3,
+        }),
+      });
+    }
+  });
+
+  it('filters candidate audit output by severity, reason, and readiness', async () => {
+    const { marketId, documentId } = await createDocumentFixture();
+    await dispatch(
+      {
+        id: 'req-candidates-import-audit-filter',
+        command: 'market-candidates-import',
+        args: {
+          market_id: marketId,
+          'payload-file': writePayload({
+            candidates: [
+              {
+                candidate_type: 'capability',
+                name: 'Runtime AI protection',
+                summary: 'Detects and blocks prompt injection attempts in deployed AI application workflows.',
+                confidence: 'high',
+                evidence: [{ document_id: documentId, quote: 'prompt injection', note: null }],
+              },
+              {
+                candidate_type: 'company',
+                name: 'Platform',
+                summary: 'AI',
+                confidence: 'low',
+                evidence: [{ document_id: documentId, quote: null, note: null }],
+              },
+            ],
+          }),
+        },
+      },
+      { caller: 'host' },
+    );
+
+    const advisoryOnly = await dispatch(
+      {
+        id: 'req-candidates-audit-ready-filter',
+        command: 'market-candidates-audit',
+        args: { market_id: marketId, ready: true },
+      },
+      { caller: 'host' },
+    );
+    expect(advisoryOnly.ok).toBe(true);
+    if (advisoryOnly.ok) {
+      const data = advisoryOnly.data as {
+        summary: Record<string, unknown>;
+        candidates: Array<{ ready_for_review: boolean; reasons: string[] }>;
+        findings: Array<{ severity: string; reason: string }>;
+      };
+      expect(data.summary).toMatchObject({ total: 1, ready_for_review: 1, needs_attention: 0 });
+      expect(data.candidates).toHaveLength(1);
+      expect(data.candidates[0]).toMatchObject({
+        ready_for_review: true,
+        reasons: expect.arrayContaining(['single_evidence', 'weak_evidence_quote']),
+      });
+      expect(data.findings.every((finding) => finding.severity === 'low')).toBe(true);
+    }
+
+    const missingQuote = await dispatch(
+      {
+        id: 'req-candidates-audit-reason-filter',
+        command: 'market-candidates-audit',
+        args: { market_id: marketId, severity: 'medium', reason: 'missing_evidence_quote', ready: false },
+      },
+      { caller: 'host' },
+    );
+    expect(missingQuote.ok).toBe(true);
+    if (missingQuote.ok) {
+      const data = missingQuote.data as {
+        summary: Record<string, unknown>;
+        candidates: Array<{ ready_for_review: boolean; reasons: string[] }>;
+        findings: Array<{ severity: string; reason: string }>;
+      };
+      expect(data.summary).toMatchObject({ total: 1, ready_for_review: 0, needs_attention: 1 });
+      expect(data.candidates).toHaveLength(1);
+      expect(data.candidates[0]).toMatchObject({
+        ready_for_review: false,
+        reasons: expect.arrayContaining(['missing_evidence_quote']),
+      });
+      expect(data.findings).toEqual([
+        expect.objectContaining({
+          severity: 'medium',
+          reason: 'missing_evidence_quote',
+        }),
+      ]);
+    }
+  });
+
+  it('updates candidate extracted content from a replacement payload', async () => {
+    const { marketId, documentId } = await createDocumentFixture();
+    const imported = await dispatch(
+      {
+        id: 'req-candidates-import-update',
+        command: 'market-candidates-import',
+        args: {
+          market_id: marketId,
+          'payload-file': writePayload({
+            candidates: [
+              {
+                candidate_type: 'company',
+                name: 'Platform',
+                summary: 'AI',
+                confidence: 'low',
+                evidence: [{ document_id: documentId, quote: null, note: null }],
+                metadata: { source: 'initial' },
+              },
+            ],
+          }),
+        },
+      },
+      { caller: 'host' },
+    );
+    expect(imported.ok).toBe(true);
+    const candidateId = (imported as { ok: true; data: { candidates: Array<{ id: string }> } }).data.candidates[0].id;
+
+    const updated = await dispatch(
+      {
+        id: 'req-candidates-update',
+        command: 'market-candidates-update',
+        args: {
+          id: candidateId,
+          'payload-file': writePayload({
+            candidate: {
+              candidate_type: 'company',
+              name: 'Example Vendor',
+              summary: 'Provides runtime protection for AI applications against prompt injection.',
+              confidence: 'medium',
+              evidence: [
+                {
+                  document_id: documentId,
+                  quote: 'Vendor protects AI applications from prompt injection.',
+                  note: 'Vendor positioning statement',
+                },
+              ],
+              metadata: { source: 'corrected' },
+            },
+          }),
+        },
+      },
+      { caller: 'host' },
+    );
+
+    expect(updated.ok).toBe(true);
+    if (updated.ok) {
+      expect(updated.data).toMatchObject({
+        candidate: {
+          id: candidateId,
+          market_id: marketId,
+          candidate_type: 'company',
+          name: 'Example Vendor',
+          summary: 'Provides runtime protection for AI applications against prompt injection.',
+          confidence: 'medium',
+          status: 'proposed',
+          evidence: [
+            {
+              document_id: documentId,
+              quote: 'Vendor protects AI applications from prompt injection.',
+              note: 'Vendor positioning statement',
+            },
+          ],
+          metadata: { source: 'corrected' },
+        },
+      });
+    }
+  });
+
   it('reviews candidates in batches and reports partial failures', async () => {
     const { marketId, documentId } = await createDocumentFixture();
     const payloadFile = writePayload({

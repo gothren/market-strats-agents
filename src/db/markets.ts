@@ -727,6 +727,49 @@ export function reviewMarketCandidate(
   return getMarketCandidate(id)!;
 }
 
+export function updateMarketCandidate(
+  id: string,
+  input: {
+    candidate_type: MarketCandidateType;
+    name: string;
+    summary?: string | null;
+    confidence: MarketCandidateConfidence;
+    evidence: MarketCandidateEvidence[];
+    metadata?: unknown;
+  },
+): MarketCandidate {
+  const existing = getMarketCandidate(id);
+  if (!existing) throw new Error(`market candidate not found: ${id}`);
+
+  assertCandidateEnums(input);
+  assertCandidateEvidence(existing.market_id, input.evidence);
+
+  getDb()
+    .prepare(
+      `UPDATE market_candidates
+       SET candidate_type = @candidate_type,
+           name = @name,
+           summary = @summary,
+           confidence = @confidence,
+           evidence_json = @evidence_json,
+           metadata_json = @metadata_json,
+           updated_at = @updated_at
+       WHERE id = @id`,
+    )
+    .run({
+      id,
+      candidate_type: input.candidate_type,
+      name: input.name,
+      summary: input.summary ?? null,
+      confidence: input.confidence,
+      evidence_json: JSON.stringify(input.evidence),
+      metadata_json: input.metadata === undefined || input.metadata === null ? null : JSON.stringify(input.metadata),
+      updated_at: now(),
+    });
+
+  return getMarketCandidate(id)!;
+}
+
 export function summarizeMarketCandidates(marketId: string): MarketCandidateSummary {
   const candidates = listMarketCandidates(marketId);
   const latest_extraction_run = getDb()
