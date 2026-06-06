@@ -3085,6 +3085,415 @@ describe('market candidates CLI resource', () => {
     }
   });
 
+  it('lists accepted candidate identity keys for agent reuse', async () => {
+    const { marketId, documentId } = await createDocumentFixture();
+    const payloadFile = writePayload({
+      candidates: [
+        {
+          candidate_type: 'capability',
+          name: 'Runtime AI monitoring',
+          summary: 'Monitors AI application behavior at runtime.',
+          confidence: 'high',
+          evidence: [{ document_id: documentId, quote: 'Vendor protects AI applications', note: null }],
+          metadata: { stable_key: 'capability:runtime_ai_monitoring' },
+        },
+        {
+          candidate_type: 'company',
+          name: 'Example Vendor',
+          summary: 'Provides AI application security tooling.',
+          confidence: 'medium',
+          evidence: [{ document_id: documentId, quote: 'Vendor protects', note: null }],
+        },
+        {
+          candidate_type: 'claim',
+          name: 'Rejected claim',
+          summary: 'This rejected claim should not appear in accepted keys.',
+          confidence: 'low',
+          evidence: [{ document_id: documentId, quote: 'Vendor protects', note: null }],
+          metadata: { stable_key: 'claim:rejected_claim' },
+        },
+      ],
+    });
+
+    const imported = await dispatch(
+      {
+        id: 'req-candidates-import-keys',
+        command: 'market-candidates-import',
+        args: { market_id: marketId, 'payload-file': payloadFile },
+      },
+      { caller: 'host' },
+    );
+    expect(imported.ok).toBe(true);
+    const candidates = (imported as { ok: true; data: { candidates: Array<{ id: string; name: string }> } }).data
+      .candidates;
+    const acceptedIds = candidates
+      .filter((candidate) => candidate.name !== 'Rejected claim')
+      .map((candidate) => candidate.id);
+    const rejectedId = candidates.find((candidate) => candidate.name === 'Rejected claim')!.id;
+
+    await dispatch(
+      {
+        id: 'req-candidates-review-keys-accepted',
+        command: 'market-candidates-review-batch',
+        args: { ids: acceptedIds.join(','), status: 'accepted', 'review-note': 'Accepted for key registry.' },
+      },
+      { caller: 'host' },
+    );
+    await dispatch(
+      {
+        id: 'req-candidates-review-keys-rejected',
+        command: 'market-candidates-review',
+        args: { id: rejectedId, status: 'rejected', 'review-note': 'Out of scope.' },
+      },
+      { caller: 'host' },
+    );
+
+    const keys = await dispatch(
+      {
+        id: 'req-candidates-keys',
+        command: 'market-candidates-keys',
+        args: { market_id: marketId },
+      },
+      { caller: 'host' },
+    );
+
+    expect(keys.ok).toBe(true);
+    if (keys.ok) {
+      expect(keys.data).toMatchObject({
+        market_id: marketId,
+        status: 'accepted',
+        summary: {
+          total: 2,
+          with_stable_key: 1,
+          missing_stable_key: 1,
+        },
+        keys: expect.arrayContaining([
+          expect.objectContaining({
+            candidate_type: 'capability',
+            name: 'Runtime AI monitoring',
+            stable_key: 'capability:runtime_ai_monitoring',
+            identity_key: 'stable:capability:runtime_ai_monitoring',
+            fallback_key: 'capability:runtime ai monitoring',
+          }),
+          expect.objectContaining({
+            candidate_type: 'company',
+            name: 'Example Vendor',
+            stable_key: null,
+            identity_key: 'fallback:company:example vendor',
+            fallback_key: 'company:example vendor',
+          }),
+        ]),
+        warnings: [
+          expect.objectContaining({
+            reason: 'missing_stable_key',
+            message: expect.stringMatching(/stable_key/i),
+          }),
+        ],
+      });
+      const data = keys.data as { keys: Array<{ name: string }> };
+      expect(data.keys.map((key) => key.name)).not.toContain('Rejected claim');
+    }
+  });
+
+  it('summarizes proposed candidate changes against accepted candidates', async () => {
+    const { marketId, documentId } = await createDocumentFixture();
+    const acceptedPayload = writePayload({
+      candidates: [
+        {
+          candidate_type: 'capability',
+          name: 'Runtime AI monitoring',
+          summary: 'Monitors AI application behavior at runtime.',
+          confidence: 'medium',
+          evidence: [{ document_id: documentId, quote: 'Vendor protects AI applications', note: 'Runtime evidence' }],
+          metadata: { stable_key: 'capability:runtime_ai_monitoring', extraction: 'baseline' },
+        },
+        {
+          candidate_type: 'company',
+          name: 'Example Vendor',
+          summary: 'Provides AI application security tooling.',
+          confidence: 'medium',
+          evidence: [{ document_id: documentId, quote: 'Vendor protects', note: null }],
+        },
+        {
+          candidate_type: 'claim',
+          name: 'Vendor-reported runtime protection',
+          summary: 'Vendor says it protects AI applications.',
+          confidence: 'low',
+          evidence: [{ document_id: documentId, quote: 'Vendor protects AI applications', note: null }],
+          metadata: { stable_key: 'claim:runtime_protection' },
+        },
+        {
+          candidate_type: 'product',
+          name: 'Rejected Product',
+          summary: 'Rejected baseline candidates should not be used for change matching.',
+          confidence: 'low',
+          evidence: [{ document_id: documentId, quote: 'Vendor protects', note: null }],
+          metadata: { stable_key: 'product:rejected_product' },
+        },
+      ],
+    });
+
+    const importedAccepted = await dispatch(
+      {
+        id: 'req-candidates-import-changes-accepted',
+        command: 'market-candidates-import',
+        args: { market_id: marketId, 'payload-file': acceptedPayload },
+      },
+      { caller: 'host' },
+    );
+    expect(importedAccepted.ok).toBe(true);
+    const acceptedCandidates = (
+      importedAccepted as { ok: true; data: { candidates: Array<{ id: string; name: string }> } }
+    ).data.candidates;
+    const acceptedIds = acceptedCandidates
+      .filter((candidate) => candidate.name !== 'Rejected Product')
+      .map((candidate) => candidate.id);
+    const rejectedId = acceptedCandidates.find((candidate) => candidate.name === 'Rejected Product')!.id;
+    const acceptedCapabilityId = acceptedCandidates.find((candidate) => candidate.name === 'Runtime AI monitoring')!.id;
+    const acceptedCompanyId = acceptedCandidates.find((candidate) => candidate.name === 'Example Vendor')!.id;
+    const acceptedClaimId = acceptedCandidates.find(
+      (candidate) => candidate.name === 'Vendor-reported runtime protection',
+    )!.id;
+
+    await dispatch(
+      {
+        id: 'req-candidates-review-changes-accepted',
+        command: 'market-candidates-review-batch',
+        args: { ids: acceptedIds.join(','), status: 'accepted', 'review-note': 'Accepted baseline.' },
+      },
+      { caller: 'host' },
+    );
+    await dispatch(
+      {
+        id: 'req-candidates-review-changes-rejected',
+        command: 'market-candidates-review',
+        args: { id: rejectedId, status: 'rejected', 'review-note': 'Rejected baseline.' },
+      },
+      { caller: 'host' },
+    );
+
+    const proposedPayload = writePayload({
+      candidates: [
+        {
+          candidate_type: 'capability',
+          name: 'Runtime agent behavior monitoring',
+          summary: 'Monitors AI application behavior at runtime and blocks prompt injection attempts.',
+          confidence: 'high',
+          evidence: [{ document_id: documentId, quote: 'prompt injection', note: 'Changed evidence' }],
+          metadata: { stable_key: 'capability:runtime_ai_monitoring', extraction: 'latest' },
+        },
+        {
+          candidate_type: 'company',
+          name: '  example   vendor  ',
+          summary: 'Provides AI application security tooling.',
+          confidence: 'medium',
+          evidence: [{ document_id: documentId, quote: 'Vendor protects', note: null }],
+        },
+        {
+          candidate_type: 'claim',
+          name: 'Vendor-reported runtime protection',
+          summary: 'Vendor says it protects AI applications.',
+          confidence: 'low',
+          evidence: [{ document_id: documentId, quote: 'Vendor protects AI applications', note: null }],
+          metadata: { stable_key: 'claim:runtime_protection' },
+        },
+        {
+          candidate_type: 'product',
+          name: 'Rejected Product',
+          summary: 'A rejected baseline with the same stable key should be treated as new.',
+          confidence: 'medium',
+          evidence: [{ document_id: documentId, quote: 'Vendor protects', note: null }],
+          metadata: { stable_key: 'product:rejected_product' },
+        },
+        {
+          candidate_type: 'category',
+          name: 'AI application runtime security',
+          summary: 'Security category for deployed AI applications.',
+          confidence: 'medium',
+          evidence: [{ document_id: documentId, quote: 'AI applications', note: null }],
+          metadata: { stable_key: 'category:ai_application_runtime_security' },
+        },
+      ],
+    });
+    const importedProposed = await dispatch(
+      {
+        id: 'req-candidates-import-changes-proposed',
+        command: 'market-candidates-import',
+        args: { market_id: marketId, 'payload-file': proposedPayload },
+      },
+      { caller: 'host' },
+    );
+    expect(importedProposed.ok).toBe(true);
+
+    const changes = await dispatch(
+      {
+        id: 'req-candidates-changes',
+        command: 'market-candidates-changes',
+        args: { market_id: marketId },
+      },
+      { caller: 'host' },
+    );
+
+    expect(changes.ok).toBe(true);
+    if (changes.ok) {
+      expect(changes.data).toMatchObject({
+        market_id: marketId,
+        baseline_status: 'accepted',
+        proposed_status: 'proposed',
+        summary: {
+          accepted_total: 3,
+          proposed_total: 5,
+          changed: 1,
+          duplicate: 2,
+          new: 2,
+          proposed_missing_stable_key: 1,
+        },
+        changes: expect.arrayContaining([
+          expect.objectContaining({
+            classification: 'changed',
+            accepted_candidate_id: acceptedCapabilityId,
+            match_method: 'stable_key',
+            stable_key: 'capability:runtime_ai_monitoring',
+            changed_fields: expect.arrayContaining(['name', 'summary', 'confidence', 'evidence', 'metadata']),
+            recommended_action: expect.stringContaining('Inspect changed fields'),
+          }),
+          expect.objectContaining({
+            classification: 'duplicate',
+            accepted_candidate_id: acceptedCompanyId,
+            match_method: 'fallback_key',
+            stable_key: null,
+            changed_fields: [],
+            recommended_action: expect.stringContaining('Update proposed candidate metadata'),
+            warnings: expect.arrayContaining([expect.objectContaining({ reason: 'missing_stable_key' })]),
+          }),
+          expect.objectContaining({
+            classification: 'duplicate',
+            accepted_candidate_id: acceptedClaimId,
+            match_method: 'stable_key',
+            stable_key: 'claim:runtime_protection',
+            changed_fields: [],
+          }),
+          expect.objectContaining({
+            classification: 'new',
+            accepted_candidate_id: null,
+            match_method: null,
+            stable_key: 'product:rejected_product',
+          }),
+          expect.objectContaining({
+            classification: 'new',
+            accepted_candidate_id: null,
+            match_method: null,
+            stable_key: 'category:ai_application_runtime_security',
+            recommended_action: expect.stringContaining('Audit this proposed candidate'),
+          }),
+        ]),
+        next_actions: expect.arrayContaining([
+          expect.stringContaining('market-candidates keys'),
+          expect.stringContaining('market-candidates audit'),
+        ]),
+      });
+    }
+
+    const changedOnly = await dispatch(
+      {
+        id: 'req-candidates-changes-filter-changed',
+        command: 'market-candidates-changes',
+        args: { market_id: marketId, classification: 'changed' },
+      },
+      { caller: 'host' },
+    );
+    expect(changedOnly.ok).toBe(true);
+    if (changedOnly.ok) {
+      expect(changedOnly.data).toMatchObject({
+        summary: {
+          accepted_total: 3,
+          proposed_total: 5,
+          visible_total: 1,
+          filters: { classification: 'changed', missing_stable_key: null },
+        },
+        changes: [
+          expect.objectContaining({
+            classification: 'changed',
+            accepted_candidate_id: acceptedCapabilityId,
+            recommended_action: expect.stringContaining('decide whether to update the accepted candidate'),
+          }),
+        ],
+      });
+    }
+
+    const duplicatesOnly = await dispatch(
+      {
+        id: 'req-candidates-changes-filter-duplicate',
+        command: 'market-candidates-changes',
+        args: { market_id: marketId, classification: 'duplicate' },
+      },
+      { caller: 'host' },
+    );
+    expect(duplicatesOnly.ok).toBe(true);
+    if (duplicatesOnly.ok) {
+      const data = duplicatesOnly.data as { changes: Array<{ classification: string }> };
+      expect(data.changes).toHaveLength(2);
+      expect(data.changes.every((change) => change.classification === 'duplicate')).toBe(true);
+    }
+
+    const missingStableKeyOnly = await dispatch(
+      {
+        id: 'req-candidates-changes-filter-missing-stable-key',
+        command: 'market-candidates-changes',
+        args: { market_id: marketId, 'missing-stable-key': true },
+      },
+      { caller: 'host' },
+    );
+    expect(missingStableKeyOnly.ok).toBe(true);
+    if (missingStableKeyOnly.ok) {
+      expect(missingStableKeyOnly.data).toMatchObject({
+        summary: {
+          visible_total: 1,
+          filters: { classification: null, missing_stable_key: true },
+        },
+        changes: [
+          expect.objectContaining({
+            classification: 'duplicate',
+            stable_key: null,
+            recommended_action: expect.stringContaining('Update proposed candidate metadata'),
+          }),
+        ],
+      });
+    }
+  });
+
+  it('rejects candidate key and change requests for unknown markets', async () => {
+    await registerMarketsResource();
+
+    const keys = await dispatch(
+      {
+        id: 'req-candidates-keys-missing-market',
+        command: 'market-candidates-keys',
+        args: { market_id: 'mkt_missing' },
+      },
+      { caller: 'host' },
+    );
+    const changes = await dispatch(
+      {
+        id: 'req-candidates-changes-missing-market',
+        command: 'market-candidates-changes',
+        args: { market_id: 'mkt_missing' },
+      },
+      { caller: 'host' },
+    );
+
+    expect(keys.ok).toBe(false);
+    if (!keys.ok) {
+      expect(keys.error.code).toBe('handler-error');
+      expect(keys.error.message).toMatch(/market not found/i);
+    }
+    expect(changes.ok).toBe(false);
+    if (!changes.ok) {
+      expect(changes.error.code).toBe('handler-error');
+      expect(changes.error.message).toMatch(/market not found/i);
+    }
+  });
+
   it('audits proposed candidates for deterministic quality guardrails', async () => {
     const { marketId, documentId } = await createDocumentFixture();
     const payloadFile = writePayload({

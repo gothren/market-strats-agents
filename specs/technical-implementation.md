@@ -26,6 +26,7 @@ The core responsibilities are:
 - Preserve provenance and run history.
 - Extract proposed market candidates from stored documents.
 - Keep accepted, proposed, and rejected intelligence separate.
+- Support deterministic candidate identity and change review through optional candidate `metadata.stable_key` values.
 - Provide read-only market overview commands from accepted candidates.
 - Expose stable CLI and internal APIs so future skills/connectors do not invent their own schema.
 
@@ -76,6 +77,31 @@ A `market_document` should represent one retrieved content unit:
 - manual upload or note: one provided artifact as a document
 
 Extraction and categorization should operate on stored `market_documents`, not directly on live URLs.
+
+## Candidate Identity And Change Detection
+
+Accepted `market_candidates` remain the source of truth. The system does not promote candidates into durable facts or market-map tables yet.
+
+Agents should attach a deterministic `metadata.stable_key` when they generate candidates. Recommended convention:
+
+```text
+<candidate_type>:<lower_snake_case_concept>
+```
+
+Examples:
+
+- `company:example_vendor`
+- `capability:runtime_ai_monitoring`
+- `problem:prompt_injection_in_code_agents`
+
+The CLI exposes accepted candidate keys so agents can reuse stable identities before generating follow-up candidate payloads.
+
+Change detection is read-only and compares proposed candidates against accepted candidates. Matching order is:
+
+1. `metadata.stable_key`
+2. normalized `candidate_type + name`
+
+The command classifies proposed candidates as `new`, `duplicate`, or `changed`, and reports changed fields such as name, summary, confidence, evidence, and metadata. It supports action-focused filters such as `--classification changed`, `--classification duplicate`, and `--missing-stable-key true`. Each item includes a deterministic `recommended_action` so agents can turn the output into a review work queue. It does not perform fuzzy semantic matching, does not use an internal LLM, and does not mutate accepted review state.
 
 ## Source Proposal Rules
 
@@ -182,6 +208,8 @@ Implemented workflows:
 - update candidate extracted content without changing review status
 - list/filter candidates, including compact output
 - summarize candidate status/type/confidence counts
+- list accepted candidate identity keys for reuse across extraction runs
+- compare proposed candidates against accepted candidates for read-only change review
 - review candidates singly or in batches
 - compute a read-only market candidate map from accepted candidates
 - generate and optionally save a read-only Markdown market report from accepted candidates

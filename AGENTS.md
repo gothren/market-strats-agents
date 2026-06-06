@@ -271,6 +271,20 @@ Search concept variants instead of relying on one analyst phrase. Product pages 
 
 Document search does light token normalization, so `monitoring` can match `monitors`, but agents should still try nearby product wording when a query returns no matches.
 
+Before generating candidates for a follow-up extraction run, list accepted candidate keys so new output can reuse stable identities:
+
+```bash
+pnpm ncl market-candidates keys --market-id <MARKET_ID> --json
+```
+
+Use returned `stable_key` values when the new candidate represents the same company, product, problem, capability, category, or claim as an accepted candidate. If there is no existing key, create a deterministic `metadata.stable_key` using this convention:
+
+```text
+<candidate_type>:<lower_snake_case_concept>
+```
+
+Examples: `company:example_vendor`, `capability:runtime_ai_monitoring`, `problem:prompt_injection_in_code_agents`. Do not use random ids or run-specific wording as stable keys.
+
 Create a local JSON payload with typed candidates. Each candidate must include evidence linked to stored document ids:
 
 ```json
@@ -288,7 +302,9 @@ Create a local JSON payload with typed candidates. Each candidate must include e
           "note": "Vendor positioning statement"
         }
       ],
-      "metadata": {}
+      "metadata": {
+        "stable_key": "company:example_vendor"
+      }
     }
   ]
 }
@@ -317,6 +333,29 @@ pnpm ncl market-candidates import \
   --dedupe \
   --json
 ```
+
+After importing candidates from a follow-up extraction run, compare proposed candidates against accepted candidates:
+
+```bash
+pnpm ncl market-candidates changes --market-id <MARKET_ID> --json
+```
+
+The change summary is read-only. It classifies proposed candidates as `new`, `duplicate`, or `changed` against accepted candidates. Matching is deterministic: `metadata.stable_key` first, then normalized candidate type and name. It does not use semantic fuzzy matching and does not modify accepted candidates. Each item includes `recommended_action`; use the command output as an action-focused work queue.
+
+Useful filters:
+
+```bash
+pnpm ncl market-candidates changes --market-id <MARKET_ID> --classification changed --json
+pnpm ncl market-candidates changes --market-id <MARKET_ID> --classification duplicate --json
+pnpm ncl market-candidates changes --market-id <MARKET_ID> --missing-stable-key true --json
+```
+
+Recommended action meanings:
+
+- `duplicate`: reject the proposed duplicate unless the user explicitly wants a separate candidate.
+- `new`: audit the proposed candidate, then review it for acceptance if evidence supports it.
+- `changed`: inspect changed fields and evidence, then decide whether to update the accepted candidate or reject the proposed candidate.
+- `missing_stable_key`: update proposed candidate metadata before review if the identity is known.
 
 Audit proposed candidates before asking the user to accept them:
 
@@ -456,6 +495,8 @@ Implemented:
 - evidence-backed market candidate import/list/get/review
 - compact document and candidate listing
 - candidate summary and batch review
+- accepted candidate key registry
+- read-only candidate change detection
 - read-only candidate market map
 - read-only Markdown market report
 - market run audit rows for collection and extraction
@@ -466,5 +507,4 @@ Not implemented yet:
 - internal web search execution
 - RSS/Slack/manual connectors
 - internal LLM extraction
-- companies/products/categories
-- market reports
+- durable companies/products/categories tables

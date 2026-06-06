@@ -1466,6 +1466,46 @@ function normalizeCandidateDisplayName(name: string): string {
   return name.trim().replace(/\s+/g, ' ');
 }
 
+function normalizedCandidateName(name: string): string {
+  return normalizeCandidateDisplayName(name).toLowerCase();
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableJson(item)).join(',')}]`;
+  }
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function parsedCandidateMetadata(candidate: MarketCandidate): Record<string, unknown> | null {
+  if (!candidate.metadata_json) return null;
+  const metadata = JSON.parse(candidate.metadata_json) as unknown;
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return null;
+  return metadata as Record<string, unknown>;
+}
+
+function candidateStableKey(candidate: MarketCandidate): string | null {
+  const metadata = parsedCandidateMetadata(candidate);
+  const stableKey = metadata?.stable_key;
+  return typeof stableKey === 'string' && stableKey.trim() !== '' ? stableKey.trim() : null;
+}
+
+function fallbackCandidateKey(candidate: MarketCandidate): string {
+  return `${candidate.candidate_type}:${normalizedCandidateName(candidate.name)}`;
+}
+
+function candidateIdentityKey(candidate: MarketCandidate): string {
+  const stableKey = candidateStableKey(candidate);
+  return stableKey ? `stable:${stableKey}` : `fallback:${fallbackCandidateKey(candidate)}`;
+}
+
 function parseIds(value: unknown): string[] {
   const ids = str(value, 'ids')
     .split(',')
@@ -1528,7 +1568,115 @@ const GENERIC_CANDIDATE_NAMES = new Set([
 ]);
 
 function normalizedCandidateKey(candidate: MarketCandidate): string {
-  return `${candidate.candidate_type}:${candidate.name.trim().toLowerCase().replace(/\s+/g, ' ')}`;
+  return fallbackCandidateKey(candidate);
+}
+
+function candidateKeyItem(candidate: MarketCandidate) {
+  const stable_key = candidateStableKey(candidate);
+  const fallback_key = fallbackCandidateKey(candidate);
+  return {
+    candidate_id: candidate.id,
+    candidate_type: candidate.candidate_type,
+    name: candidate.name,
+    summary: candidate.summary,
+    confidence: candidate.confidence,
+    status: candidate.status,
+    review_note: candidate.review_note,
+    stable_key,
+    fallback_key,
+    identity_key: candidateIdentityKey(candidate),
+  };
+}
+
+type CandidateChangeClassification = 'new' | 'duplicate' | 'changed';
+type CandidateChangeMatchMethod = 'stable_key' | 'fallback_key' | null;
+const CANDIDATE_CHANGE_CLASSIFICATIONS = ['new', 'duplicate', 'changed'] as const;
+
+function normalizedEvidenceForComparison(candidate: MarketCandidate): MarketCandidateEvidence[] {
+  return candidateEvidence(candidate)
+    .map((item) => ({
+      document_id: item.document_id,
+      quote: item.quote?.trim() || null,
+      note: item.note?.trim() || null,
+    }))
+    .sort((a, b) => stableJson(a).localeCompare(stableJson(b)));
+}
+
+function changedCandidateFields(accepted: MarketCandidate, proposed: MarketCandidate): string[] {
+  const changed: string[] = [];
+  if (normalizedCandidateName(accepted.name) !== normalizedCandidateName(proposed.name)) {
+    changed.push('name');
+  }
+  if ((accepted.summary?.trim() || null) !== (proposed.summary?.trim() || null)) {
+    changed.push('summary');
+  }
+  if (accepted.confidence !== proposed.confidence) {
+    changed.push('confidence');
+  }
+  if (stableJson(normalizedEvidenceForComparison(accepted)) !== stableJson(normalizedEvidenceForComparison(proposed))) {
+    changed.push('evidence');
+  }
+  if (stableJson(parsedCandidateMetadata(accepted)) !== stableJson(parsedCandidateMetadata(proposed))) {
+    changed.push('metadata');
+  }
+  return changed;
+}
+
+function recommendedCandidateChangeAction(input: {
+  classification: CandidateChangeClassification;
+  missing_stable_key: boolean;
+}): string {
+  if (input.missing_stable_key) {
+    return 'Update proposed candidate metadata with metadata.stable_key before review if the identity is known.';
+  }
+  if (input.classification === 'duplicate') {
+    return 'Reject the proposed duplicate unless the user explicitly wants a separate candidate.';
+  }
+  if (input.classification === 'changed') {
+    return 'Inspect changed fields and evidence, then decide whether to update the accepted candidate or reject the proposed candidate.';
+  }
+  return 'Audit this proposed candidate, then review it for acceptance if the evidence supports it.';
+}
+
+function candidateChangeItem(input: {
+  proposed: MarketCandidate;
+  accepted: MarketCandidate | null;
+  match_method: CandidateChangeMatchMethod;
+}) {
+  const stable_key = candidateStableKey(input.proposed);
+  const fallback_key = fallbackCandidateKey(input.proposed);
+  const changed_fields = input.accepted ? changedCandidateFields(input.accepted, input.proposed) : [];
+  const classification: CandidateChangeClassification = input.accepted
+    ? changed_fields.length > 0
+      ? 'changed'
+      : 'duplicate'
+    : 'new';
+  const warnings = [];
+  if (!stable_key) {
+    warnings.push({
+      reason: 'missing_stable_key',
+      message: 'Proposed candidate has no metadata.stable_key; matching fell back to normalized type and name.',
+    });
+  }
+  const recommended_action = recommendedCandidateChangeAction({
+    classification,
+    missing_stable_key: !stable_key,
+  });
+
+  return {
+    classification,
+    proposed_candidate: compactCandidate(input.proposed),
+    accepted_candidate_id: input.accepted?.id ?? null,
+    accepted_candidate: input.accepted ? compactCandidate(input.accepted) : null,
+    match_method: input.match_method,
+    stable_key,
+    fallback_key,
+    identity_key: candidateIdentityKey(input.proposed),
+    changed_fields,
+    warnings,
+    recommended_action,
+    suggested_action: recommended_action,
+  };
 }
 
 function normalizedQuoteText(value: string): string {
@@ -1955,6 +2103,132 @@ register({
   access: 'open',
   parseArgs: (raw) => ({ market_id: str(raw.market_id ?? raw['market-id'], 'market_id') }),
   handler: async (args) => summarizeMarketCandidates(args.market_id),
+});
+
+register({
+  name: 'market-candidates-keys',
+  description: 'List accepted candidate identity keys for agent reuse across extraction runs.',
+  resource: 'market-candidates',
+  access: 'open',
+  parseArgs: (raw) => ({ market_id: str(raw.market_id ?? raw['market-id'], 'market_id') }),
+  handler: async (args) => {
+    const market = getMarket(args.market_id);
+    if (!market) throw new Error(`market not found: ${args.market_id}`);
+
+    const accepted = listMarketCandidates(args.market_id, { status: 'accepted' });
+    const keys = accepted.map(candidateKeyItem);
+    const missingStableKey = keys.filter((item) => item.stable_key === null);
+
+    return {
+      market_id: args.market_id,
+      status: 'accepted',
+      summary: {
+        total: accepted.length,
+        with_stable_key: keys.length - missingStableKey.length,
+        missing_stable_key: missingStableKey.length,
+        by_type: countBy(accepted.map((candidate) => candidate.candidate_type)),
+      },
+      keys,
+      warnings: missingStableKey.map((item) => ({
+        candidate_id: item.candidate_id,
+        candidate_type: item.candidate_type,
+        name: item.name,
+        reason: 'missing_stable_key',
+        message:
+          'Accepted candidate has no metadata.stable_key; future matching will rely on normalized type and name.',
+      })),
+      next_actions: [
+        `ncl market-candidates list --market-id ${args.market_id} --status proposed --compact`,
+        `ncl market-candidates changes --market-id ${args.market_id}`,
+      ],
+    };
+  },
+});
+
+register({
+  name: 'market-candidates-changes',
+  description: 'Compare proposed candidates against accepted candidates without mutating review state.',
+  resource: 'market-candidates',
+  access: 'open',
+  parseArgs: (raw) => ({
+    market_id: str(raw.market_id ?? raw['market-id'], 'market_id'),
+    classification:
+      raw.classification === undefined || raw.classification === null || raw.classification === ''
+        ? null
+        : (requiredEnum(
+            raw.classification,
+            CANDIDATE_CHANGE_CLASSIFICATIONS,
+            'classification',
+          ) as CandidateChangeClassification),
+    missing_stable_key:
+      raw.missing_stable_key === undefined && raw['missing-stable-key'] === undefined
+        ? null
+        : bool(raw.missing_stable_key ?? raw['missing-stable-key']),
+  }),
+  handler: async (args) => {
+    const market = getMarket(args.market_id);
+    if (!market) throw new Error(`market not found: ${args.market_id}`);
+
+    const accepted = listMarketCandidates(args.market_id, { status: 'accepted' });
+    const proposed = listMarketCandidates(args.market_id, { status: 'proposed' });
+    const acceptedByStableKey = new Map<string, MarketCandidate>();
+    const acceptedByFallbackKey = new Map<string, MarketCandidate>();
+    for (const candidate of accepted) {
+      const stableKey = candidateStableKey(candidate);
+      if (stableKey && !acceptedByStableKey.has(stableKey)) {
+        acceptedByStableKey.set(stableKey, candidate);
+      }
+      const fallbackKey = fallbackCandidateKey(candidate);
+      if (!acceptedByFallbackKey.has(fallbackKey)) {
+        acceptedByFallbackKey.set(fallbackKey, candidate);
+      }
+    }
+
+    const changes = proposed.map((candidate) => {
+      const stableKey = candidateStableKey(candidate);
+      const fallbackKey = fallbackCandidateKey(candidate);
+      const acceptedByStable = stableKey ? acceptedByStableKey.get(stableKey) : undefined;
+      if (acceptedByStable) {
+        return candidateChangeItem({ proposed: candidate, accepted: acceptedByStable, match_method: 'stable_key' });
+      }
+      const acceptedByFallback = acceptedByFallbackKey.get(fallbackKey);
+      if (acceptedByFallback) {
+        return candidateChangeItem({ proposed: candidate, accepted: acceptedByFallback, match_method: 'fallback_key' });
+      }
+      return candidateChangeItem({ proposed: candidate, accepted: null, match_method: null });
+    });
+    const visibleChanges = changes.filter((change) => {
+      if (args.classification && change.classification !== args.classification) return false;
+      if (args.missing_stable_key !== null && (change.stable_key === null) !== args.missing_stable_key) return false;
+      return true;
+    });
+
+    return {
+      market_id: args.market_id,
+      baseline_status: 'accepted',
+      proposed_status: 'proposed',
+      summary: {
+        accepted_total: accepted.length,
+        proposed_total: proposed.length,
+        new: changes.filter((item) => item.classification === 'new').length,
+        duplicate: changes.filter((item) => item.classification === 'duplicate').length,
+        changed: changes.filter((item) => item.classification === 'changed').length,
+        proposed_missing_stable_key: proposed.filter((candidate) => !candidateStableKey(candidate)).length,
+        visible_total: visibleChanges.length,
+        filters: {
+          classification: args.classification,
+          missing_stable_key: args.missing_stable_key,
+        },
+        by_type: countBy(proposed.map((candidate) => candidate.candidate_type)),
+      },
+      changes: visibleChanges,
+      next_actions: [
+        `ncl market-candidates keys --market-id ${args.market_id}`,
+        `ncl market-candidates audit --market-id ${args.market_id}`,
+        `ncl market-candidates get <CANDIDATE_ID>`,
+      ],
+    };
+  },
 });
 
 register({

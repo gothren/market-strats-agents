@@ -15,31 +15,7 @@ Website/docs crawling v1 is already implemented. The active roadmap below priori
 
 # Active Prioritized Roadmap
 
-## P1 - Change Detection For Agent Review
-
-Goal:
-
-- Help the agent identify what changed between evidence/candidate runs.
-
-Context:
-
-- The product spec requires periodic recategorization and market change tracking.
-- Since accepted candidates are source of truth, change detection should compare new proposed candidates against accepted candidates before adding durable facts.
-
-Implementation notes:
-
-- Start with candidate-level change summaries, not durable market-map versions.
-- Detect likely new companies/products/capabilities/categories/claims and likely duplicates.
-- Surface changed positioning or category suggestions as reviewable candidate context.
-- Keep uncertainty visible; do not silently rewrite accepted state.
-
-Acceptance:
-
-- Agent can run a command/workflow that summarizes new, duplicate, changed, and possibly stale candidates.
-- Output is JSON-friendly and suitable for user review.
-- No accepted candidate is modified without explicit review.
-
-## P2 - Guided Market Setup Workflow
+## P1 - Guided Market Setup Workflow
 
 Goal:
 
@@ -62,7 +38,7 @@ Acceptance:
 - Missing required fields produce clear next actions.
 - Existing market get/list output is sufficient to verify setup completion.
 
-## P3 - RSS Connector
+## P2 - RSS Connector
 
 Goal:
 
@@ -86,7 +62,7 @@ Acceptance:
 - Repeated collection does not duplicate unchanged entries.
 - Failed or malformed feed entries are auditable.
 
-## P4 - Slack Connector
+## P3 - Slack Connector
 
 Goal:
 
@@ -110,7 +86,7 @@ Acceptance:
 - Stored Slack documents have clear provenance and privacy/access metadata.
 - Missing credentials or permissions produce clear unsupported/failed responses.
 
-## P5 - Review States For Unknowns, Conflicts, And Staleness
+## P4 - Review States For Unknowns, Conflicts, And Staleness
 
 Goal:
 
