@@ -43,7 +43,7 @@ import {
 } from '../../db/markets.js';
 import { register } from '../registry.js';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 
 const SOURCE_TYPES = ['website', 'docs', 'blog', 'rss', 'search_query', 'slack', 'exact_url', 'manual'] as const;
 const TRUST_TIERS = ['official', 'trusted', 'third_party', 'search', 'private'] as const;
@@ -1362,6 +1362,106 @@ function marketCandidateMapItem(candidate: MarketCandidate) {
   };
 }
 
+function markdownTableCell(value: string | null | undefined): string {
+  return (value?.trim() || 'Not specified').replace(/\|/g, '\\|').replace(/\s+/g, ' ');
+}
+
+function candidateEvidence(candidate: MarketCandidate): MarketCandidateEvidence[] {
+  return JSON.parse(candidate.evidence_json) as MarketCandidateEvidence[];
+}
+
+function markdownCandidateTable(candidates: MarketCandidate[], emptyMessage: string): string[] {
+  if (candidates.length === 0) return [emptyMessage];
+
+  return [
+    '| Name | Summary | Confidence | Candidate ID |',
+    '| --- | --- | --- | --- |',
+    ...candidates.map(
+      (candidate) =>
+        `| ${markdownTableCell(candidate.name)} | ${markdownTableCell(candidate.summary)} | ${candidate.confidence} | ${candidate.id} |`,
+    ),
+  ];
+}
+
+function markdownCandidateBullets(candidates: MarketCandidate[], emptyMessage: string): string[] {
+  if (candidates.length === 0) return [emptyMessage];
+
+  return candidates.map(
+    (candidate) =>
+      `- ${candidate.name} (${candidate.confidence}, ${candidate.id}): ${candidate.summary?.trim() || 'No summary.'}`,
+  );
+}
+
+function renderMarketCandidateReport(input: {
+  market: NonNullable<ReturnType<typeof getMarket>>;
+  candidates: MarketCandidate[];
+}): string {
+  const boundary = getMarketBoundary(input.market.id);
+  const companies = input.candidates.filter((candidate) => candidate.candidate_type === 'company');
+  const products = input.candidates.filter((candidate) => candidate.candidate_type === 'product');
+  const problems = input.candidates.filter((candidate) => candidate.candidate_type === 'problem');
+  const capabilities = input.candidates.filter((candidate) => candidate.candidate_type === 'capability');
+  const categories = input.candidates.filter((candidate) => candidate.candidate_type === 'category');
+  const claims = input.candidates.filter((candidate) => candidate.candidate_type === 'claim');
+  const lines: string[] = [];
+
+  lines.push(`# Market Report: ${input.market.name}`);
+  lines.push('');
+  lines.push('## Market Definition');
+  lines.push(`- Description: ${input.market.description?.trim() || 'Not specified.'}`);
+  lines.push(`- Inclusions: ${boundary?.inclusions?.trim() || 'Not specified.'}`);
+  lines.push(`- Exclusions: ${boundary?.exclusions?.trim() || 'Not specified.'}`);
+  lines.push(`- Adjacent markets: ${boundary?.adjacent_markets?.trim() || 'Not specified.'}`);
+  lines.push('');
+  lines.push('## Category Map');
+  lines.push(...markdownCandidateBullets(categories, 'No accepted categories yet.'));
+  lines.push('');
+  lines.push('## Companies And Products');
+  lines.push(...markdownCandidateTable([...companies, ...products], 'No accepted companies or products yet.'));
+  lines.push('');
+  lines.push('## Problem-To-Solution Map');
+  lines.push('No reviewed problem-to-solution relationships are inferred in v1.');
+  lines.push('');
+  lines.push('### Problems');
+  lines.push(...markdownCandidateBullets(problems, 'No accepted problems yet.'));
+  lines.push('');
+  lines.push('### Capabilities');
+  lines.push(...markdownCandidateBullets(capabilities, 'No accepted capabilities yet.'));
+  lines.push('');
+  lines.push('## Evidence-Backed Claims');
+  lines.push(...markdownCandidateBullets(claims, 'No accepted claims yet.'));
+  lines.push('');
+  lines.push('## Known Gaps');
+  if (input.candidates.length === 0) {
+    lines.push('- No accepted candidates yet.');
+  } else {
+    if (companies.length === 0) lines.push('- No accepted companies yet.');
+    if (products.length === 0) lines.push('- No accepted products yet.');
+    if (problems.length === 0) lines.push('- No accepted problems yet.');
+    if (capabilities.length === 0) lines.push('- No accepted capabilities yet.');
+    if (categories.length === 0) lines.push('- No accepted categories yet.');
+    if (claims.length === 0) lines.push('- No accepted claims yet.');
+    if ([companies, products, problems, capabilities, categories, claims].every((group) => group.length > 0)) {
+      lines.push('- No structural gaps detected from accepted candidate types.');
+    }
+  }
+  lines.push('');
+  lines.push('## Evidence Appendix');
+  if (input.candidates.length === 0) {
+    lines.push('No accepted candidate evidence yet.');
+  } else {
+    for (const candidate of input.candidates) {
+      for (const evidence of candidateEvidence(candidate)) {
+        const quote = evidence.quote?.trim() ? `: "${evidence.quote.trim()}"` : '';
+        const note = evidence.note?.trim() ? ` (${evidence.note.trim()})` : '';
+        lines.push(`- ${candidate.id} / ${evidence.document_id}${quote}${note}`);
+      }
+    }
+  }
+
+  return `${lines.join('\n')}\n`;
+}
+
 function normalizeCandidateDisplayName(name: string): string {
   return name.trim().replace(/\s+/g, ' ');
 }
@@ -1962,6 +2062,47 @@ register({
       },
       next_actions: [
         `ncl market-candidates summary --market-id ${args.market_id}`,
+        `ncl market-candidates list --market-id ${args.market_id} --status proposed --compact`,
+      ],
+    };
+  },
+});
+
+register({
+  name: 'market-candidates-report',
+  description: 'Generate a read-only Markdown market report from accepted candidates.',
+  resource: 'market-candidates',
+  access: 'open',
+  parseArgs: (raw) => ({
+    market_id: str(raw.market_id ?? raw['market-id'], 'market_id'),
+    format:
+      raw.format === undefined || raw.format === null || raw.format === ''
+        ? 'markdown'
+        : requiredEnum(raw.format, ['markdown'] as const, 'format'),
+    output_file: optionalStr(raw.output_file ?? raw['output-file']),
+  }),
+  handler: async (args) => {
+    const market = getMarket(args.market_id);
+    if (!market) throw new Error(`market not found: ${args.market_id}`);
+
+    const accepted = listMarketCandidates(args.market_id, { status: 'accepted' });
+    const markdown = renderMarketCandidateReport({ market, candidates: accepted });
+    if (args.output_file) {
+      writeFileSync(args.output_file, markdown, 'utf8');
+    }
+
+    return {
+      market_id: args.market_id,
+      status: 'accepted',
+      format: args.format,
+      output_file: args.output_file,
+      markdown,
+      summary: {
+        total: accepted.length,
+        by_type: countBy(accepted.map((candidate) => candidate.candidate_type)),
+      },
+      next_actions: [
+        `ncl market-candidates map --market-id ${args.market_id}`,
         `ncl market-candidates list --market-id ${args.market_id} --status proposed --compact`,
       ],
     };

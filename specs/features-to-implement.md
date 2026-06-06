@@ -15,56 +15,7 @@ Website/docs crawling v1 is already implemented. The active roadmap below priori
 
 # Active Prioritized Roadmap
 
-## P1 - Evidence-To-Candidate Agent Workflow Support
-
-Goal:
-
-- Make it easy for a NanoClaw or external agent to turn stored evidence into reviewable market candidates.
-
-Context:
-
-- The product should not build internal LLM extraction yet.
-- The agent should inspect stored documents, reason externally, generate candidate JSON, import/dedupe candidates, and verify/review them.
-
-Implementation notes:
-
-- Do not add internal LLM extraction or provider abstractions.
-- Improve tool support around document inspection, candidate JSON validation, import previews, dedupe feedback, and post-import verification.
-- Keep extraction based on stored `market_documents`, not live URLs.
-- Candidates remain proposed by default and must link to document evidence.
-
-Acceptance:
-
-- Agent can list compact documents, inspect full evidence, produce candidate JSON, validate/import it, and verify imported counts without direct DB queries.
-- Invalid candidate payloads fail with actionable errors.
-- Imported candidates include evidence references to document ids.
-- Existing review commands can handle the resulting candidates.
-
-## P2 - Agent-Readable Market Report
-
-Goal:
-
-- Generate a useful Markdown market report from accepted candidates.
-
-Context:
-
-- A read-only candidate map exists, but the product spec calls for a primary Markdown report.
-- The report should be computed from accepted `market_candidates`; no durable facts or market-map tables yet.
-
-Implementation notes:
-
-- Add a read-only report command or workflow.
-- Include market definition, category map, company/product table, problem-to-solution map, capability map, unknowns/weak evidence, and evidence appendix where possible.
-- Do not invent relationships that are not present in accepted candidates/evidence.
-
-Acceptance:
-
-- A command can output and optionally save a Markdown report.
-- Report content is based on accepted candidates only by default.
-- Evidence references are included for claims and market structure.
-- Empty or partial markets produce a useful report with explicit gaps.
-
-## P3 - Change Detection For Agent Review
+## P1 - Change Detection For Agent Review
 
 Goal:
 
@@ -88,7 +39,7 @@ Acceptance:
 - Output is JSON-friendly and suitable for user review.
 - No accepted candidate is modified without explicit review.
 
-## P4 - Guided Market Setup Workflow
+## P2 - Guided Market Setup Workflow
 
 Goal:
 
@@ -111,7 +62,7 @@ Acceptance:
 - Missing required fields produce clear next actions.
 - Existing market get/list output is sufficient to verify setup completion.
 
-## P5 - RSS Connector
+## P3 - RSS Connector
 
 Goal:
 
@@ -135,7 +86,7 @@ Acceptance:
 - Repeated collection does not duplicate unchanged entries.
 - Failed or malformed feed entries are auditable.
 
-## P6 - Slack Connector
+## P4 - Slack Connector
 
 Goal:
 
@@ -159,7 +110,7 @@ Acceptance:
 - Stored Slack documents have clear provenance and privacy/access metadata.
 - Missing credentials or permissions produce clear unsupported/failed responses.
 
-## P7 - Review States For Unknowns, Conflicts, And Staleness
+## P5 - Review States For Unknowns, Conflicts, And Staleness
 
 Goal:
 

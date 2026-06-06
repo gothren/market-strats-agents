@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -3737,6 +3737,181 @@ describe('market candidates CLI resource', () => {
     if (!mapped.ok) {
       expect(mapped.error.code).toBe('handler-error');
       expect(mapped.error.message).toMatch(/market not found/i);
+    }
+  });
+
+  it('generates an accepted-candidate markdown market report without mutating facts', async () => {
+    const { marketId, documentId } = await createDocumentFixture();
+    const payloadFile = writePayload({
+      candidates: [
+        {
+          candidate_type: 'company',
+          name: 'Example Vendor',
+          summary: 'Builds code security tooling.',
+          confidence: 'high',
+          evidence: [{ document_id: documentId, quote: 'Vendor protects', note: 'Company positioning' }],
+        },
+        {
+          candidate_type: 'product',
+          name: 'Example Scanner',
+          summary: 'Scans repositories for vulnerable code.',
+          confidence: 'medium',
+          evidence: [{ document_id: documentId, quote: 'protects AI applications', note: null }],
+        },
+        {
+          candidate_type: 'problem',
+          name: 'Prompt injection in code agents',
+          summary: 'Attackers can manipulate coding agents through malicious prompts.',
+          confidence: 'medium',
+          evidence: [{ document_id: documentId, quote: 'prompt injection', note: null }],
+        },
+        {
+          candidate_type: 'capability',
+          name: 'Prompt injection detection',
+          summary: 'Detects prompt injection attempts.',
+          confidence: 'high',
+          evidence: [{ document_id: documentId, quote: 'prompt injection', note: 'Capability evidence' }],
+        },
+        {
+          candidate_type: 'category',
+          name: 'AI code security',
+          summary: 'Security tooling for AI-assisted software development.',
+          confidence: 'medium',
+          evidence: [{ document_id: documentId, quote: 'AI applications', note: null }],
+        },
+        {
+          candidate_type: 'claim',
+          name: 'Vendor-reported runtime protection',
+          summary: 'Vendor says it protects AI applications at runtime.',
+          confidence: 'low',
+          evidence: [{ document_id: documentId, quote: 'Vendor protects AI applications', note: 'Vendor claim' }],
+        },
+        {
+          candidate_type: 'claim',
+          name: 'Unreviewed claim',
+          summary: 'This should stay out of the report.',
+          confidence: 'low',
+          evidence: [{ document_id: documentId, quote: 'Vendor protects', note: null }],
+        },
+      ],
+    });
+
+    const imported = await dispatch(
+      {
+        id: 'req-candidates-import-report',
+        command: 'market-candidates-import',
+        args: { market_id: marketId, 'payload-file': payloadFile },
+      },
+      { caller: 'host' },
+    );
+    expect(imported.ok).toBe(true);
+    const candidates = (imported as { ok: true; data: { candidates: Array<{ id: string; name: string }> } }).data
+      .candidates;
+    const acceptedIds = candidates
+      .filter((candidate) => candidate.name !== 'Unreviewed claim')
+      .map((candidate) => candidate.id);
+    const companyId = candidates.find((candidate) => candidate.name === 'Example Vendor')!.id;
+
+    const accepted = await dispatch(
+      {
+        id: 'req-candidates-review-report-accepted',
+        command: 'market-candidates-review-batch',
+        args: {
+          ids: acceptedIds.join(','),
+          status: 'accepted',
+          'review-note': 'Accepted by user review for market report.',
+        },
+      },
+      { caller: 'host' },
+    );
+    expect(accepted.ok).toBe(true);
+
+    const reported = await dispatch(
+      {
+        id: 'req-candidates-report',
+        command: 'market-candidates-report',
+        args: { market_id: marketId },
+      },
+      { caller: 'host' },
+    );
+
+    expect(reported.ok).toBe(true);
+    if (reported.ok) {
+      const data = reported.data as {
+        format: string;
+        markdown: string;
+        summary: Record<string, unknown>;
+        output_file: string | null;
+        next_actions: string[];
+      };
+      expect(data).toMatchObject({
+        market_id: marketId,
+        status: 'accepted',
+        format: 'markdown',
+        output_file: null,
+        summary: {
+          total: 6,
+          by_type: {
+            company: 1,
+            product: 1,
+            problem: 1,
+            capability: 1,
+            category: 1,
+            claim: 1,
+          },
+        },
+        next_actions: expect.arrayContaining([
+          expect.stringContaining('market-candidates map'),
+          expect.stringContaining('market-candidates list'),
+        ]),
+      });
+      expect(data.markdown).toContain('# Market Report: AI Security');
+      expect(data.markdown).toContain('## Category Map');
+      expect(data.markdown).toContain('| Example Vendor | Builds code security tooling. | high |');
+      expect(data.markdown).toContain('## Problem-To-Solution Map');
+      expect(data.markdown).toContain('No reviewed problem-to-solution relationships are inferred in v1.');
+      expect(data.markdown).toContain(`- ${companyId} / ${documentId}: "Vendor protects"`);
+      expect(data.markdown).not.toContain('Unreviewed claim');
+    }
+  });
+
+  it('writes the market report to disk when output_file is provided', async () => {
+    const { marketId } = await createDocumentFixture();
+    const outputFile = join(mkdtempSync(join(tmpdir(), 'market-report-')), 'report.md');
+
+    const reported = await dispatch(
+      {
+        id: 'req-candidates-report-output',
+        command: 'market-candidates-report',
+        args: { market_id: marketId, 'output-file': outputFile },
+      },
+      { caller: 'host' },
+    );
+
+    expect(reported.ok).toBe(true);
+    if (reported.ok) {
+      const data = reported.data as { markdown: string; output_file: string };
+      expect(data.output_file).toBe(outputFile);
+      expect(readFileSync(outputFile, 'utf8')).toBe(data.markdown);
+    }
+  });
+
+  it('rejects candidate report requests for unknown markets', async () => {
+    await registerMarketsResource();
+
+    const reported = await dispatch(
+      {
+        id: 'req-candidates-report-missing-market',
+        command: 'market-candidates-report',
+        args: { market_id: 'mkt_missing' },
+      },
+      { caller: 'host' },
+    );
+
+    expect(reported.ok).toBe(false);
+    if (!reported.ok) {
+      expect(reported.error.code).toBe('handler-error');
+      expect(reported.error.message).toMatch(/market not found/i);
     }
   });
 });

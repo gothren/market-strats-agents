@@ -417,6 +417,15 @@ pnpm ncl market-candidates map --market-id <MARKET_ID> --json
 
 The computed map groups accepted candidates into companies, products, problems, capabilities, categories, and claims. Treat accepted candidates as the source of truth; do not create separate facts or market-map rows.
 
+Generate a Markdown market report from accepted candidates:
+
+```bash
+pnpm ncl market-candidates report --market-id <MARKET_ID> --json
+pnpm ncl market-candidates report --market-id <MARKET_ID> --output-file /private/tmp/<market>-report.md --json
+```
+
+The report is read-only and uses accepted candidates only. It includes market definition, category map, company/product table, problems, capabilities, claims, known gaps, and an evidence appendix. The v1 problem-to-solution section does not infer relationships that were not reviewed.
+
 Suggested review notes:
 
 - Capabilities: `Accepted by user review: capability matches market boundary.`
@@ -448,6 +457,7 @@ Implemented:
 - compact document and candidate listing
 - candidate summary and batch review
 - read-only candidate market map
+- read-only Markdown market report
 - market run audit rows for collection and extraction
 
 Not implemented yet:

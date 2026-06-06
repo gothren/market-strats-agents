@@ -184,6 +184,7 @@ Implemented workflows:
 - summarize candidate status/type/confidence counts
 - review candidates singly or in batches
 - compute a read-only market candidate map from accepted candidates
+- generate and optionally save a read-only Markdown market report from accepted candidates
 
 Important current design choice:
 
