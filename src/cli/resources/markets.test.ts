@@ -2392,6 +2392,268 @@ describe('market source proposal CLI resource', () => {
   });
 });
 
+describe('market search CLI resource', () => {
+  async function createMarketForSearch(): Promise<string> {
+    await registerMarketsResource();
+
+    const created = await dispatch(
+      {
+        id: 'req-create-market-search',
+        command: 'markets-create',
+        args: { name: `AI Security Search ${Math.random()}`, description: 'AI security market' },
+      },
+      { caller: 'host' },
+    );
+    expect(created.ok).toBe(true);
+    return (created as { ok: true; data: { market: { id: string } } }).data.market.id;
+  }
+
+  function daysAgo(days: number): string {
+    return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  }
+
+  it('records an external search attempt as durable search memory', async () => {
+    const marketId = await createMarketForSearch();
+    const payloadFile = writePayload({
+      query: 'AI agent security runtime monitoring vendors',
+      intent: 'find_more_companies',
+      rationale: 'Few accepted companies around runtime monitoring.',
+      searched_at: daysAgo(2),
+      results: [
+        {
+          url: 'https://vendor.example.com',
+          title: 'Vendor Example',
+          snippet: 'Runtime security for AI agents.',
+          decision: 'proposed',
+          reason: 'Official vendor page.',
+        },
+      ],
+      notes: 'Useful for vendor discovery.',
+    });
+
+    const resp = await dispatch(
+      {
+        id: 'req-market-search-record',
+        command: 'market-search-record',
+        args: { market_id: marketId, payload_file: payloadFile },
+      },
+      { caller: 'host' },
+    );
+
+    expect(resp.ok).toBe(true);
+    if (resp.ok) {
+      expect(resp.data).toMatchObject({
+        search_run: {
+          id: expect.stringMatching(/^msearch_/),
+          market_id: marketId,
+          query: 'AI agent security runtime monitoring vendors',
+          intent: 'find_more_companies',
+          rationale: 'Few accepted companies around runtime monitoring.',
+          results: [
+            {
+              url: 'https://vendor.example.com',
+              decision: 'proposed',
+            },
+          ],
+          notes: 'Useful for vendor discovery.',
+        },
+        next_actions: expect.arrayContaining([expect.stringContaining('market-source-proposals import')]),
+      });
+    }
+  });
+
+  it('classifies market search history by recency', async () => {
+    const marketId = await createMarketForSearch();
+    for (const item of [
+      { query: 'recent AI security vendors', searched_at: daysAgo(5) },
+      { query: 'neutral AI security vendors', searched_at: daysAgo(30) },
+      { query: 'stale AI security vendors', searched_at: daysAgo(90) },
+    ]) {
+      const recorded = await dispatch(
+        {
+          id: `req-record-${item.query}`,
+          command: 'market-search-record',
+          args: {
+            market_id: marketId,
+            payload_file: writePayload({
+              query: item.query,
+              intent: 'find_more_companies',
+              results: [],
+              searched_at: item.searched_at,
+            }),
+          },
+        },
+        { caller: 'host' },
+      );
+      expect(recorded.ok).toBe(true);
+    }
+
+    const resp = await dispatch(
+      { id: 'req-market-search-history', command: 'market-search-history', args: { market_id: marketId } },
+      { caller: 'host' },
+    );
+
+    expect(resp.ok).toBe(true);
+    if (resp.ok) {
+      expect(resp.data).toMatchObject({
+        summary: {
+          total_queries: 3,
+          recent: 1,
+          neutral: 1,
+          stale: 1,
+        },
+        recent_searches: [expect.objectContaining({ query: 'recent AI security vendors' })],
+        neutral_searches: [expect.objectContaining({ query: 'neutral AI security vendors' })],
+        stale_searches: [expect.objectContaining({ query: 'stale AI security vendors' })],
+      });
+    }
+  });
+
+  it('returns search context with gaps and suggested search directions', async () => {
+    const marketId = await createMarketForSearch();
+
+    const boundary = await dispatch(
+      {
+        id: 'req-search-context-boundary',
+        command: 'market-boundaries-update',
+        args: {
+          market_id: marketId,
+          inclusions: 'Runtime AI app security, prompt injection defense',
+          exclusions: 'Generic cloud security',
+          adjacent_markets: 'AppSec, data security',
+        },
+      },
+      { caller: 'host' },
+    );
+    expect(boundary.ok).toBe(true);
+
+    const source = await dispatch(
+      {
+        id: 'req-search-context-source',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: 'https://vendor.example.com',
+          source_type: 'website',
+          trust_tier: 'official',
+        },
+      },
+      { caller: 'host' },
+    );
+    expect(source.ok).toBe(true);
+    const sourceId = (source as { ok: true; data: { source: { id: string } } }).data.source.id;
+
+    const marketDb = await import('../../db/markets.js');
+    const run = marketDb.createMarketRun({
+      market_id: marketId,
+      source_id: sourceId,
+      kind: 'collection',
+      status: 'completed',
+    });
+    const document = marketDb.createMarketDocument({
+      market_id: marketId,
+      source_id: sourceId,
+      run_id: run.id,
+      url: 'https://vendor.example.com',
+      content_text: 'Vendor Example provides runtime monitoring and prompt injection protection for AI agents.',
+      status: 'fetched',
+    });
+    marketDb.createMarketCandidate({
+      market_id: marketId,
+      candidate_type: 'company',
+      name: 'Vendor Example',
+      summary: 'AI agent runtime security company.',
+      confidence: 'medium',
+      status: 'accepted',
+      evidence: [{ document_id: document.id, quote: 'runtime monitoring' }],
+      metadata: { stable_key: 'company:vendor_example' },
+    });
+    marketDb.createMarketCandidate({
+      market_id: marketId,
+      candidate_type: 'capability',
+      name: 'Runtime monitoring',
+      summary: 'Monitors AI agents at runtime.',
+      confidence: 'medium',
+      status: 'accepted',
+      evidence: [{ document_id: document.id, quote: 'runtime monitoring' }],
+      metadata: { stable_key: 'capability:runtime_monitoring' },
+    });
+
+    const recorded = await dispatch(
+      {
+        id: 'req-search-context-record',
+        command: 'market-search-record',
+        args: {
+          market_id: marketId,
+          payload_file: writePayload({
+            query: 'AI agent security runtime monitoring vendors',
+            intent: 'find_more_companies',
+            results: [],
+            searched_at: daysAgo(3),
+          }),
+        },
+      },
+      { caller: 'host' },
+    );
+    expect(recorded.ok).toBe(true);
+
+    const resp = await dispatch(
+      { id: 'req-market-search-context', command: 'market-search-context', args: { market_id: marketId } },
+      { caller: 'host' },
+    );
+
+    expect(resp.ok).toBe(true);
+    if (resp.ok) {
+      expect(resp.data).toMatchObject({
+        market: expect.objectContaining({ id: marketId }),
+        summary: expect.objectContaining({
+          accepted_companies: 1,
+          accepted_capabilities: 1,
+          active_sources: 1,
+          search_runs: 1,
+        }),
+        gaps: expect.arrayContaining([expect.objectContaining({ kind: 'thin_company_discovery' })]),
+        suggested_searches: expect.arrayContaining([
+          expect.objectContaining({
+            kind: 'expand_known_company_sources',
+            query: expect.stringContaining('Vendor Example'),
+          }),
+          expect.objectContaining({ kind: 'keyword_gap_search', query: expect.stringContaining('Runtime monitoring') }),
+        ]),
+        recent_searches: [expect.objectContaining({ query: 'AI agent security runtime monitoring vendors' })],
+      });
+    }
+  });
+
+  it('fails search commands clearly for unknown markets and invalid payloads', async () => {
+    await registerMarketsResource();
+
+    const unknown = await dispatch(
+      {
+        id: 'req-search-unknown',
+        command: 'market-search-context',
+        args: { market_id: 'mkt_missing' },
+      },
+      { caller: 'host' },
+    );
+    expect(unknown).toMatchObject({ ok: false, error: { message: expect.stringContaining('market not found') } });
+
+    const marketId = await createMarketForSearch();
+    const invalid = await dispatch(
+      {
+        id: 'req-search-invalid-payload',
+        command: 'market-search-record',
+        args: { market_id: marketId, payload_file: writePayload({ query: 'missing intent' }) },
+      },
+      { caller: 'host' },
+    );
+    expect(invalid).toMatchObject({
+      ok: false,
+      error: { code: 'invalid-args', message: expect.stringContaining('intent') },
+    });
+  });
+});
+
 describe('market documents CLI resource', () => {
   it('lists and gets stored documents for agent review without re-fetching sources', async () => {
     await registerMarketsResource();

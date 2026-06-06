@@ -11,33 +11,31 @@ Use this format so coding agents can pick up work without a long planning thread
 - `Implementation notes`: constraints, preferred direction, and known decisions.
 - `Acceptance`: what must be true before the item can be removed.
 
-Website/docs crawling v1 is already implemented. The active roadmap below prioritizes agent-facing workflows and source acquisition, with broader crawler hardening kept in `Not Prioritized Yet` until the current crawler becomes limiting.
+Website/docs crawling v1 and market search context/memory are already implemented. The active roadmap below prioritizes agent-facing workflows and source acquisition, with broader crawler hardening kept in `Not Prioritized Yet` until the current crawler becomes limiting.
 
 # Active Prioritized Roadmap
 
-## P1 - RSS Connector
+## P1 - Review States For Unknowns, Conflicts, And Staleness
 
 Goal:
 
-- Collect article-level evidence from RSS feeds.
+- Represent uncertainty explicitly in review workflows.
 
 Context:
 
-- RSS is useful for recurring market monitoring, vendor blogs, release notes, and industry publications.
-- It is less urgent than website crawling/search but important for periodic updates.
+- The product spec treats unknowns, conflicts, and stale evidence as first-class output.
+- Current candidate statuses are enough for basic review, but not enough for richer market intelligence workflows.
 
 Implementation notes:
 
-- Support `rss` source collection.
-- Store one `market_document` per feed entry/article.
-- Preserve feed URL, entry URL, title, published timestamp where available, fetched timestamp, content hash, and metadata.
-- Use unchanged detection to avoid duplicate documents across runs.
+- Do not add this until basic candidate/report/change workflows start needing it.
+- Prefer extending candidate metadata/review summaries before adding new tables.
+- Keep accepted/proposed/rejected behavior backward compatible.
 
 Acceptance:
 
-- An `rss` source can collect multiple entry-level documents.
-- Repeated collection does not duplicate unchanged entries.
-- Failed or malformed feed entries are auditable.
+- Agent can mark or surface weak, conflicting, stale, or unknown intelligence in a structured way.
+- Reports can include uncertainty sections without unsupported guesses.
 
 ## P2 - Slack Connector
 
@@ -63,27 +61,29 @@ Acceptance:
 - Stored Slack documents have clear provenance and privacy/access metadata.
 - Missing credentials or permissions produce clear unsupported/failed responses.
 
-## P3 - Review States For Unknowns, Conflicts, And Staleness
+## P3 - RSS Connector
 
 Goal:
 
-- Represent uncertainty explicitly in review workflows.
+- Collect article-level evidence from RSS feeds.
 
 Context:
 
-- The product spec treats unknowns, conflicts, and stale evidence as first-class output.
-- Current candidate statuses are enough for basic review, but not enough for richer market intelligence workflows.
+- RSS is useful for recurring market monitoring, vendor blogs, release notes, and industry publications.
+- It is less urgent than website crawling/search but important for periodic updates.
 
 Implementation notes:
 
-- Do not add this until basic candidate/report/change workflows start needing it.
-- Prefer extending candidate metadata/review summaries before adding new tables.
-- Keep accepted/proposed/rejected behavior backward compatible.
+- Support `rss` source collection.
+- Store one `market_document` per feed entry/article.
+- Preserve feed URL, entry URL, title, published timestamp where available, fetched timestamp, content hash, and metadata.
+- Use unchanged detection to avoid duplicate documents across runs.
 
 Acceptance:
 
-- Agent can mark or surface weak, conflicting, stale, or unknown intelligence in a structured way.
-- Reports can include uncertainty sections without unsupported guesses.
+- An `rss` source can collect multiple entry-level documents.
+- Repeated collection does not duplicate unchanged entries.
+- Failed or malformed feed entries are auditable.
 
 # Not Prioritized Yet
 

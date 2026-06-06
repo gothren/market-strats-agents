@@ -189,6 +189,46 @@ Current collection support is intentionally narrow. `exact_url` sources fetch on
 
 If the user asks to discover sources or companies, use your own search tools first. Do not expect this repo to execute web search. Convert useful search findings into source proposals so they can be reviewed before becoming active market sources.
 
+Before searching, ask the repo for market search context and history:
+
+```bash
+pnpm ncl market-search context --market-id <MARKET_ID> --json
+pnpm ncl market-search history --market-id <MARKET_ID> --json
+```
+
+Use this output as a search agenda. Prefer stale or never-tried themes. Deprioritize searches marked `deprioritize_recent` unless the user explicitly asks for a refresh. Search broadly for more companies, deeper public evidence for known companies, and keyword-driven gaps from accepted problems, capabilities, and categories.
+
+After each external/web search, record what you searched and what you found:
+
+```json
+{
+  "query": "AI agent security runtime monitoring vendors",
+  "intent": "find_more_companies",
+  "rationale": "Market search context showed thin company discovery for runtime monitoring.",
+  "results": [
+    {
+      "url": "https://vendor.example.com",
+      "title": "Vendor Example",
+      "snippet": "Runtime security for AI agents.",
+      "decision": "proposed",
+      "reason": "Official vendor page with in-scope positioning."
+    },
+    {
+      "url": "https://directory.example.com",
+      "title": "Old AI Security Directory",
+      "snippet": "Directory page.",
+      "decision": "ignored",
+      "reason": "Old third-party directory; not useful as direct evidence."
+    }
+  ],
+  "notes": "Useful query for vendor discovery; weak for technical docs."
+}
+```
+
+```bash
+pnpm ncl market-search record --market-id <MARKET_ID> --payload-file /private/tmp/<market>-search-record.json --json
+```
+
 Use `trust_tier: "official"` for official vendor websites, docs, blogs, pricing pages, and RSS feeds. Use `trusted` for user-provided or known-good non-official sources, `third_party` for external commentary/directories, `search` for raw search-result surfaces, and `private` for internal sources.
 
 Search quality guidance: prefer official vendor homepages, product pages, and docs over blogs, press pages, analyst pages, marketplaces, or old launch posts.
@@ -211,7 +251,10 @@ Create a JSON payload:
       "search_query": "AI security companies",
       "proposed_entity_name": "Vendor Example",
       "proposed_entity_type": "company",
-      "metadata": {}
+      "metadata": {
+        "search_intent": "find_more_companies",
+        "gap": "thin_company_discovery"
+      }
     }
   ]
 }
@@ -499,6 +542,7 @@ Implemented:
 - market boundary upsert
 - market source add/list
 - source proposal import/list/get/review
+- market search context/history/record
 - exact URL source collection
 - bounded website/docs source collection
 - market document storage/list/get

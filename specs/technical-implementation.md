@@ -37,6 +37,7 @@ Current main records:
 - `market_source_proposals`: reviewable source URLs found by agents before they become active sources.
 - `market_sources`: research surfaces the agent is allowed to inspect.
 - `market_runs`: auditable collection or extraction attempts.
+- `market_search_runs`: durable memory of external searches performed by an agent.
 - `market_documents`: retrieved evidence artifacts.
 - `market_candidates`: reviewable companies, products, problems, capabilities, categories, and claims.
 
@@ -133,6 +134,22 @@ A source proposal records:
 Proposal import validates URL, source type, and rationale. Generic `url` is rejected. Imports dedupe against already imported proposals and active market sources by normalized URL.
 
 Accepted proposals become ordinary `market_sources`; rejected proposals do not create sources. Once accepted, proposal-discovered sources have the same collection behavior and operational weight as user-provided sources, with provenance preserved through the proposal row and source notes.
+
+## Search Context And Memory
+
+The repo does not perform web search internally. Instead, it gives external agents context for deciding what to search and durable memory of what they searched.
+
+`market-search context` is read-only. It summarizes the market boundary, source/proposal/document/candidate counts, accepted candidate themes, gaps, recent searches, stale searches, and suggested search directions. It should not impose a rigid coverage schema such as one docs page or one product page per company.
+
+`market-search record` stores one external search attempt in `market_search_runs`: query, intent, rationale, result summaries, notes, and searched timestamp. Results are flexible JSON so the agent can record proposed, ignored, rejected, or no-useful-result outcomes without forcing them into source proposals.
+
+`market-search history` groups prior searches by normalized query and classifies them with deterministic recency guidance:
+
+- searched within 14 days: `deprioritize_recent`
+- searched 15-59 days ago: `neutral`
+- searched 60+ days ago: `consider_refresh`
+
+Agents should use this guidance to avoid repeating recent searches and to refresh stale themes, but it is advisory rather than a hard block.
 
 ## Collection Rules
 

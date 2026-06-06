@@ -133,6 +133,18 @@ export interface MarketSourceProposal {
   reviewed_at: string | null;
 }
 
+export interface MarketSearchRun {
+  id: string;
+  market_id: string;
+  query: string;
+  intent: string;
+  rationale: string | null;
+  results_json: string;
+  notes: string | null;
+  searched_at: string;
+  created_at: string;
+}
+
 function now(): string {
   return new Date().toISOString();
 }
@@ -480,6 +492,50 @@ export function getLatestMarketRun(marketId: string): MarketRun | undefined {
   return getDb()
     .prepare('SELECT * FROM market_runs WHERE market_id = ? ORDER BY started_at DESC, id DESC LIMIT 1')
     .get(marketId) as MarketRun | undefined;
+}
+
+export function createMarketSearchRun(input: {
+  market_id: string;
+  query: string;
+  intent: string;
+  rationale?: string | null;
+  results?: unknown;
+  notes?: string | null;
+  searched_at?: string | null;
+}): MarketSearchRun {
+  const at = now();
+  const run: MarketSearchRun = {
+    id: id('msearch'),
+    market_id: input.market_id,
+    query: input.query,
+    intent: input.intent,
+    rationale: input.rationale ?? null,
+    results_json: JSON.stringify(input.results ?? []),
+    notes: input.notes ?? null,
+    searched_at: input.searched_at ?? at,
+    created_at: at,
+  };
+
+  getDb()
+    .prepare(
+      `INSERT INTO market_search_runs
+         (id, market_id, query, intent, rationale, results_json, notes, searched_at, created_at)
+       VALUES
+         (@id, @market_id, @query, @intent, @rationale, @results_json, @notes, @searched_at, @created_at)`,
+    )
+    .run(run);
+
+  return run;
+}
+
+export function getMarketSearchRun(id: string): MarketSearchRun | undefined {
+  return getDb().prepare('SELECT * FROM market_search_runs WHERE id = ?').get(id) as MarketSearchRun | undefined;
+}
+
+export function listMarketSearchRuns(marketId: string): MarketSearchRun[] {
+  return getDb()
+    .prepare('SELECT * FROM market_search_runs WHERE market_id = ? ORDER BY searched_at DESC, id DESC')
+    .all(marketId) as MarketSearchRun[];
 }
 
 export function createMarketDocument(input: {

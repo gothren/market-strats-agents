@@ -65,4 +65,7 @@ export {
   completeMarketRun,
   listMarketRuns,
   getLatestMarketRun,
+  createMarketSearchRun,
+  getMarketSearchRun,
+  listMarketSearchRuns,
 } from './markets.js';

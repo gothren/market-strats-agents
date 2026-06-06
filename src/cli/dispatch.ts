@@ -56,6 +56,7 @@ export async function dispatch(req: RequestFrame, ctx: CallerContext): Promise<R
         'markets',
         'market-boundaries',
         'market-sources',
+        'market-search',
         'market-documents',
         'market-candidates',
         'market-runs',

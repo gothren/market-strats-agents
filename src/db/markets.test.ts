@@ -17,7 +17,7 @@ describe('market core schema', () => {
       .prepare(
         `SELECT name FROM sqlite_master
          WHERE type = 'table'
-           AND name IN ('markets', 'market_boundaries', 'market_sources', 'market_source_proposals', 'market_runs', 'market_documents', 'market_candidates')
+           AND name IN ('markets', 'market_boundaries', 'market_sources', 'market_source_proposals', 'market_runs', 'market_search_runs', 'market_documents', 'market_candidates')
          ORDER BY name`,
       )
       .all() as Array<{ name: string }>;
@@ -27,6 +27,7 @@ describe('market core schema', () => {
       'market_candidates',
       'market_documents',
       'market_runs',
+      'market_search_runs',
       'market_source_proposals',
       'market_sources',
       'markets',
@@ -78,6 +79,15 @@ describe('market core schema', () => {
       metadata_json: JSON.stringify({ content_type: 'text/html' }),
     });
 
+    marketDb.createMarketSearchRun({
+      market_id: market.id,
+      query: 'AI security vendors',
+      intent: 'find_more_companies',
+      rationale: 'Initial market discovery.',
+      results: [{ url: 'https://example.com/vendor', decision: 'proposed' }],
+      notes: 'Useful search.',
+    });
+
     getDb().prepare('DELETE FROM markets WHERE id = ?').run(market.id);
 
     expect(getDb().prepare('SELECT COUNT(*) AS c FROM market_boundaries').get()).toMatchObject({ c: 0 });
@@ -85,6 +95,43 @@ describe('market core schema', () => {
     expect(getDb().prepare('SELECT COUNT(*) AS c FROM market_documents').get()).toMatchObject({ c: 0 });
     expect(getDb().prepare('SELECT COUNT(*) AS c FROM market_sources').get()).toMatchObject({ c: 0 });
     expect(getDb().prepare('SELECT COUNT(*) AS c FROM market_runs').get()).toMatchObject({ c: 0 });
+    expect(getDb().prepare('SELECT COUNT(*) AS c FROM market_search_runs').get()).toMatchObject({ c: 0 });
+  });
+});
+
+describe('market search memory db helpers', () => {
+  it('stores and lists external search attempts for a market', async () => {
+    const marketDb = await import('./markets.js');
+    const market = marketDb.createMarket({
+      name: 'AI Security',
+      description: 'Security products for AI systems',
+    });
+
+    const older = marketDb.createMarketSearchRun({
+      market_id: market.id,
+      query: 'AI agent security vendors',
+      intent: 'find_more_companies',
+      rationale: 'Initial discovery.',
+      results: [{ url: 'https://vendor.example.com', decision: 'proposed' }],
+      notes: 'Found one useful result.',
+      searched_at: '2026-01-01T00:00:00.000Z',
+    });
+    const newer = marketDb.createMarketSearchRun({
+      market_id: market.id,
+      query: 'prompt injection prevention vendors',
+      intent: 'keyword_gap_search',
+      results: [],
+      searched_at: '2026-02-01T00:00:00.000Z',
+    });
+
+    expect(older.id).toMatch(/^msearch_/);
+    expect(JSON.parse(older.results_json)).toEqual([{ url: 'https://vendor.example.com', decision: 'proposed' }]);
+    expect(marketDb.getMarketSearchRun(newer.id)).toMatchObject({
+      id: newer.id,
+      query: 'prompt injection prevention vendors',
+      intent: 'keyword_gap_search',
+    });
+    expect(marketDb.listMarketSearchRuns(market.id).map((run) => run.id)).toEqual([newer.id, older.id]);
   });
 });
 

@@ -6,6 +6,7 @@ import {
   createMarket,
   createMarketSourceProposal,
   createMarketRun,
+  createMarketSearchRun,
   findExistingFetchedMarketDocument,
   findDuplicateMarketSourceProposal,
   findMarketSourceByNormalizedUrl,
@@ -18,6 +19,7 @@ import {
   findDuplicateMarketCandidate,
   listMarketCandidates,
   listMarketDocuments,
+  listMarketSearchRuns,
   listMarketSourceProposals,
   listMarketSources,
   listMarketSourcesWithLatestFailedDocument,
@@ -35,6 +37,7 @@ import {
   type MarketCandidateType,
   type MarketDocument,
   type MarketRun,
+  type MarketSearchRun,
   type MarketSource,
   type MarketSourceProposal,
   type MarketSourceProposalStatus,
@@ -581,6 +584,293 @@ function acceptSourceProposal(proposal: MarketSourceProposal, reviewNote: string
   return { proposal: reviewed, source };
 }
 
+interface ParsedMarketSearchResult {
+  url: string | null;
+  title: string | null;
+  snippet: string | null;
+  decision: string | null;
+  reason: string | null;
+  metadata: unknown;
+}
+
+interface ParsedMarketSearchRecord {
+  query: string;
+  intent: string;
+  rationale: string | null;
+  results: ParsedMarketSearchResult[];
+  notes: string | null;
+  searched_at: string | null;
+}
+
+interface SearchHistoryItem {
+  query: string;
+  normalized_query: string;
+  intent: string;
+  last_searched_at: string;
+  age_days: number;
+  search_count: number;
+  latest_run_id: string;
+  recommendation: 'deprioritize_recent' | 'neutral' | 'consider_refresh';
+}
+
+function parseMarketSearchRecordPayload(path: string): ParsedMarketSearchRecord {
+  const payload = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new Error('market search record payload must be an object');
+  }
+
+  const raw = payload as Record<string, unknown>;
+  const rawResults = raw.results === undefined || raw.results === null ? [] : raw.results;
+  if (!Array.isArray(rawResults)) {
+    throw new Error('results must be an array');
+  }
+
+  const searchedAt = optionalStr(raw.searched_at ?? raw['searched-at']);
+  if (searchedAt && Number.isNaN(Date.parse(searchedAt))) {
+    throw new Error('searched_at must be an ISO timestamp');
+  }
+
+  return {
+    query: str(raw.query, 'query'),
+    intent: str(raw.intent, 'intent'),
+    rationale: nullableStr(raw.rationale),
+    notes: nullableStr(raw.notes),
+    searched_at: searchedAt,
+    results: rawResults.map((item, index) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        throw new Error(`results[${index}] must be an object`);
+      }
+      const result = item as Record<string, unknown>;
+      const url = optionalStr(result.url);
+      if (url) assertValidHttpUrl(url, `results[${index}].url`);
+      return {
+        url,
+        title: optionalStr(result.title),
+        snippet: optionalStr(result.snippet),
+        decision: optionalStr(result.decision),
+        reason: optionalStr(result.reason),
+        metadata: result.metadata ?? null,
+      };
+    }),
+  };
+}
+
+function marketSearchRunWithParsedJson(run: MarketSearchRun) {
+  return {
+    ...run,
+    results: JSON.parse(run.results_json) as unknown,
+  };
+}
+
+function normalizedSearchQuery(query: string): string {
+  return query.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function searchAgeDays(searchedAt: string): number {
+  return Math.max(0, Math.floor((Date.now() - Date.parse(searchedAt)) / (24 * 60 * 60 * 1000)));
+}
+
+function searchRecommendation(ageDays: number): SearchHistoryItem['recommendation'] {
+  if (ageDays <= 14) return 'deprioritize_recent';
+  if (ageDays >= 60) return 'consider_refresh';
+  return 'neutral';
+}
+
+function summarizeSearchHistory(runs: MarketSearchRun[]): {
+  searches: SearchHistoryItem[];
+  recent_searches: SearchHistoryItem[];
+  neutral_searches: SearchHistoryItem[];
+  stale_searches: SearchHistoryItem[];
+  summary: { total_runs: number; total_queries: number; recent: number; neutral: number; stale: number };
+} {
+  const byQuery = new Map<string, MarketSearchRun[]>();
+  for (const run of runs) {
+    const key = normalizedSearchQuery(run.query);
+    byQuery.set(key, [...(byQuery.get(key) ?? []), run]);
+  }
+
+  const searches = [...byQuery.entries()]
+    .map(([normalizedQuery, queryRuns]) => {
+      const sorted = [...queryRuns].sort(
+        (a, b) => b.searched_at.localeCompare(a.searched_at) || b.id.localeCompare(a.id),
+      );
+      const latest = sorted[0];
+      const ageDays = searchAgeDays(latest.searched_at);
+      return {
+        query: latest.query,
+        normalized_query: normalizedQuery,
+        intent: latest.intent,
+        last_searched_at: latest.searched_at,
+        age_days: ageDays,
+        search_count: sorted.length,
+        latest_run_id: latest.id,
+        recommendation: searchRecommendation(ageDays),
+      };
+    })
+    .sort((a, b) => b.last_searched_at.localeCompare(a.last_searched_at) || a.query.localeCompare(b.query));
+
+  const recent_searches = searches.filter((item) => item.recommendation === 'deprioritize_recent');
+  const neutral_searches = searches.filter((item) => item.recommendation === 'neutral');
+  const stale_searches = searches.filter((item) => item.recommendation === 'consider_refresh');
+
+  return {
+    searches,
+    recent_searches,
+    neutral_searches,
+    stale_searches,
+    summary: {
+      total_runs: runs.length,
+      total_queries: searches.length,
+      recent: recent_searches.length,
+      neutral: neutral_searches.length,
+      stale: stale_searches.length,
+    },
+  };
+}
+
+function marketSearchHistory(marketId: string) {
+  const market = getMarket(marketId);
+  if (!market) throw new Error(`market not found: ${marketId}`);
+  const runs = listMarketSearchRuns(marketId);
+  return {
+    market_id: marketId,
+    ...summarizeSearchHistory(runs),
+    runs: runs.map(marketSearchRunWithParsedJson),
+    recency_policy: {
+      recent_days: 14,
+      stale_days: 60,
+      guidance:
+        'Deprioritize recently searched queries unless the user asks for a refresh; prioritize stale or never-tried themes.',
+    },
+  };
+}
+
+function topCandidateNames(candidates: MarketCandidate[], type: MarketCandidateType, limit: number): string[] {
+  return candidates
+    .filter((candidate) => candidate.status === 'accepted' && candidate.candidate_type === type)
+    .map((candidate) => candidate.name)
+    .slice(0, limit);
+}
+
+function marketSearchContext(marketId: string) {
+  const market = getMarket(marketId);
+  if (!market) throw new Error(`market not found: ${marketId}`);
+
+  const boundary = getMarketBoundary(marketId) ?? null;
+  const sources = listMarketSources(marketId);
+  const proposals = listMarketSourceProposals(marketId);
+  const documents = listMarketDocuments(marketId);
+  const candidates = listMarketCandidates(marketId);
+  const history = summarizeSearchHistory(listMarketSearchRuns(marketId));
+  const acceptedCompanies = topCandidateNames(candidates, 'company', 8);
+  const acceptedProblems = topCandidateNames(candidates, 'problem', 8);
+  const acceptedCapabilities = topCandidateNames(candidates, 'capability', 8);
+  const acceptedCategories = topCandidateNames(candidates, 'category', 8);
+
+  const gaps: Array<{ kind: string; rationale: string; suggested_themes: string[] }> = [];
+  const suggestedSearches: Array<{ kind: string; query: string; rationale: string }> = [];
+  const marketTerms = [market.name, boundary?.inclusions, boundary?.adjacent_markets].filter(Boolean).join(' ');
+
+  if (acceptedCompanies.length < 5) {
+    gaps.push({
+      kind: 'thin_company_discovery',
+      rationale: `Only ${acceptedCompanies.length} accepted company candidates are available.`,
+      suggested_themes: ['company discovery', 'vendor discovery', 'market landscape'],
+    });
+    suggestedSearches.push({
+      kind: 'find_more_companies',
+      query: `${market.name} companies vendors`,
+      rationale: 'Find additional companies in the market before assuming coverage is broad.',
+    });
+    if (boundary?.inclusions) {
+      suggestedSearches.push({
+        kind: 'find_more_companies',
+        query: `${boundary.inclusions} vendors`,
+        rationale: 'Use the market boundary to discover more in-scope companies.',
+      });
+    }
+  }
+
+  if (sources.length < Math.max(acceptedCompanies.length, 1)) {
+    gaps.push({
+      kind: 'thin_public_source_coverage',
+      rationale: `${sources.length} active sources for ${acceptedCompanies.length} accepted companies.`,
+      suggested_themes: ['official websites', 'official docs', 'official product pages'],
+    });
+  }
+
+  for (const company of acceptedCompanies.slice(0, 5)) {
+    suggestedSearches.push({
+      kind: 'expand_known_company_sources',
+      query: `${company} ${market.name} official docs product`,
+      rationale: 'Expand public evidence for a known accepted company without assuming a fixed source schema.',
+    });
+  }
+
+  for (const term of [...acceptedProblems, ...acceptedCapabilities, ...acceptedCategories].slice(0, 8)) {
+    suggestedSearches.push({
+      kind: 'keyword_gap_search',
+      query: `${term} ${market.name} vendors`,
+      rationale: 'Search from accepted market concepts to find more companies, products, or source evidence.',
+    });
+  }
+
+  for (const stale of history.stale_searches.slice(0, 5)) {
+    suggestedSearches.push({
+      kind: 'refresh_stale_search',
+      query: stale.query,
+      rationale: `This query was last searched ${stale.age_days} days ago and may be worth refreshing.`,
+    });
+  }
+
+  if (documents.length === 0 && sources.length > 0) {
+    gaps.push({
+      kind: 'sources_not_collected',
+      rationale: 'Sources exist but no market documents are stored yet.',
+      suggested_themes: ['collect existing sources before broadening discovery'],
+    });
+  }
+
+  return {
+    market,
+    boundary,
+    summary: {
+      active_sources: sources.filter((source) => source.status === 'active').length,
+      source_proposals: proposals.length,
+      proposed_source_proposals: proposals.filter((proposal) => proposal.status === 'proposed').length,
+      documents: documents.length,
+      candidates: candidates.length,
+      accepted_companies: acceptedCompanies.length,
+      accepted_problems: acceptedProblems.length,
+      accepted_capabilities: acceptedCapabilities.length,
+      accepted_categories: acceptedCategories.length,
+      search_runs: history.summary.total_runs,
+    },
+    current_themes: {
+      market_terms: marketTerms,
+      companies: acceptedCompanies,
+      problems: acceptedProblems,
+      capabilities: acceptedCapabilities,
+      categories: acceptedCategories,
+    },
+    gaps,
+    suggested_searches: suggestedSearches,
+    recent_searches: history.recent_searches,
+    stale_searches: history.stale_searches,
+    search_guidance: [
+      'Use external/web search; this repo records search memory and source proposals but does not search the web internally.',
+      'Deprioritize recent searches unless the user asks for a refresh.',
+      'Prioritize stale or never-tried themes, known company evidence expansion, and market keyword gaps.',
+      'Import useful URLs as source proposals with loose metadata linking them to the search intent when helpful.',
+    ],
+    next_actions: [
+      `ncl market-search history --market-id ${marketId}`,
+      `ncl market-search record --market-id ${marketId} --payload-file <JSON_FILE>`,
+      `ncl market-source-proposals import --market-id ${marketId} --payload-file <JSON_FILE>`,
+    ],
+  };
+}
+
 register({
   name: 'market-source-proposals-import',
   description: 'Import agent-discovered source proposals from a JSON payload file.',
@@ -759,6 +1049,59 @@ register({
         reviewed: reviewed.length,
         failed: failed.length,
       },
+    };
+  },
+});
+
+register({
+  name: 'market-search-context',
+  description: 'Show market gaps and search directions for an external agent.',
+  resource: 'market-search',
+  access: 'open',
+  parseArgs: (raw) => ({ market_id: str(raw.market_id ?? raw['market-id'], 'market_id') }),
+  handler: async (args) => marketSearchContext(args.market_id),
+});
+
+register({
+  name: 'market-search-history',
+  description: 'List durable external search memory with recency guidance.',
+  resource: 'market-search',
+  access: 'open',
+  parseArgs: (raw) => ({ market_id: str(raw.market_id ?? raw['market-id'], 'market_id') }),
+  handler: async (args) => marketSearchHistory(args.market_id),
+});
+
+register({
+  name: 'market-search-record',
+  description: 'Record one external search attempt and its findings.',
+  resource: 'market-search',
+  access: 'open',
+  parseArgs: (raw) => ({
+    market_id: str(raw.market_id ?? raw['market-id'], 'market_id'),
+    payload_file: str(raw.payload_file ?? raw['payload-file'], 'payload_file'),
+    payload: parseMarketSearchRecordPayload(str(raw.payload_file ?? raw['payload-file'], 'payload_file')),
+  }),
+  handler: async (args) => {
+    const market = getMarket(args.market_id);
+    if (!market) throw new Error(`market not found: ${args.market_id}`);
+
+    const searchRun = createMarketSearchRun({
+      market_id: args.market_id,
+      query: args.payload.query,
+      intent: args.payload.intent,
+      rationale: args.payload.rationale,
+      results: args.payload.results,
+      notes: args.payload.notes,
+      searched_at: args.payload.searched_at,
+    });
+
+    return {
+      search_run: marketSearchRunWithParsedJson(searchRun),
+      history_item: summarizeSearchHistory([searchRun]).searches[0],
+      next_actions: [
+        `ncl market-search history --market-id ${args.market_id}`,
+        `ncl market-source-proposals import --market-id ${args.market_id} --payload-file <JSON_FILE>`,
+      ],
     };
   },
 });
