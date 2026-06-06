@@ -222,6 +222,79 @@ register({
 });
 
 register({
+  name: 'markets-setup',
+  description: 'Validate and apply first-run market setup with boundary and seed sources.',
+  resource: 'markets',
+  access: 'open',
+  parseArgs: (raw) => ({
+    payload_file: str(raw.payload_file ?? raw['payload-file'], 'payload_file'),
+    dry_run: bool(raw.dry_run ?? raw['dry-run']),
+    payload: parseMarketSetupPayload(str(raw.payload_file ?? raw['payload-file'], 'payload_file')),
+  }),
+  handler: async (args) => {
+    const { uniqueSources, skippedSources } = splitDuplicateSetupSources(args.payload.sources);
+
+    if (args.dry_run) {
+      return {
+        dry_run: true,
+        market: {
+          id: null,
+          name: args.payload.market.name,
+          description: args.payload.market.description,
+        },
+        boundary: args.payload.boundary,
+        boundary_status: args.payload.boundary ? 'planned' : 'not_provided',
+        planned_sources: uniqueSources,
+        added_sources: [],
+        skipped_sources: skippedSources,
+        next_actions: marketSetupNextActions(null),
+      };
+    }
+
+    const market = createMarket(args.payload.market);
+    const boundary = args.payload.boundary
+      ? upsertMarketBoundary({ market_id: market.id, ...args.payload.boundary })
+      : null;
+    const addedSources: MarketSource[] = [];
+    const skippedAfterCreate: SkippedSetupSource[] = [...skippedSources];
+
+    for (const source of uniqueSources) {
+      const existing = findMarketSourceByNormalizedUrl(market.id, source.url);
+      if (existing) {
+        skippedAfterCreate.push({
+          url: source.url,
+          normalized_url: source.normalized_url,
+          reason: 'duplicate',
+          duplicate_of: existing.url,
+        });
+        continue;
+      }
+
+      addedSources.push(
+        addMarketSource({
+          market_id: market.id,
+          url: source.url,
+          source_type: source.source_type,
+          trust_tier: source.trust_tier,
+          notes: source.notes,
+        }),
+      );
+    }
+
+    return {
+      dry_run: false,
+      market,
+      boundary,
+      boundary_status: boundary ? 'created' : 'not_provided',
+      planned_sources: [],
+      added_sources: addedSources,
+      skipped_sources: skippedAfterCreate,
+      next_actions: marketSetupNextActions(market.id),
+    };
+  },
+});
+
+register({
   name: 'market-boundaries-update',
   description: 'Create or update the working boundary for a market.',
   resource: 'market-boundaries',
@@ -288,6 +361,35 @@ interface ParsedSourceProposal {
   metadata: unknown;
 }
 
+interface ParsedMarketSetupSource {
+  url: string;
+  normalized_url: string;
+  source_type: MarketSourceType;
+  trust_tier: MarketSourceTrustTier;
+  notes: string | null;
+}
+
+interface ParsedMarketSetupPayload {
+  market: {
+    name: string;
+    description: string | null;
+  };
+  boundary: {
+    inclusions: string | null;
+    exclusions: string | null;
+    adjacent_markets: string | null;
+    notes: string | null;
+  } | null;
+  sources: ParsedMarketSetupSource[];
+}
+
+interface SkippedSetupSource {
+  url: string;
+  normalized_url: string;
+  reason: 'duplicate';
+  duplicate_of?: string;
+}
+
 function assertValidHttpUrl(value: string, fieldName: string): void {
   let url: URL;
   try {
@@ -298,6 +400,110 @@ function assertValidHttpUrl(value: string, fieldName: string): void {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new Error(`${fieldName} must be a valid URL`);
   }
+}
+
+function optionalObject(value: unknown, fieldName: string): Record<string, unknown> | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${fieldName} must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function parseMarketSetupPayload(path: string): ParsedMarketSetupPayload {
+  const payload = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new Error('market setup payload must be an object');
+  }
+
+  const raw = payload as Record<string, unknown>;
+  const market = optionalObject(raw.market, 'market');
+  if (!market) {
+    throw new Error('market setup payload must include market');
+  }
+
+  const boundary = optionalObject(raw.boundary, 'boundary');
+  const rawSources = raw.sources === undefined || raw.sources === null ? [] : raw.sources;
+  if (!Array.isArray(rawSources)) {
+    throw new Error('sources must be an array');
+  }
+
+  return {
+    market: {
+      name: str(market.name, 'market.name'),
+      description: nullableStr(market.description),
+    },
+    boundary: boundary
+      ? {
+          inclusions: nullableStr(boundary.inclusions),
+          exclusions: nullableStr(boundary.exclusions),
+          adjacent_markets: nullableStr(boundary.adjacent_markets ?? boundary['adjacent-markets']),
+          notes: nullableStr(boundary.notes),
+        }
+      : null,
+    sources: rawSources.map((item, index) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        throw new Error(`sources[${index}] must be an object`);
+      }
+      const source = item as Record<string, unknown>;
+      const url = str(source.url, `sources[${index}].url`);
+      assertValidHttpUrl(url, `sources[${index}].url`);
+      return {
+        url,
+        normalized_url: normalizeMarketUrl(url),
+        source_type: requiredEnum(
+          source.source_type ?? source['source-type'],
+          SOURCE_TYPES,
+          `sources[${index}].source_type`,
+        ) as MarketSourceType,
+        trust_tier: requiredEnum(
+          source.trust_tier ?? source['trust-tier'],
+          TRUST_TIERS,
+          `sources[${index}].trust_tier`,
+        ) as MarketSourceTrustTier,
+        notes: nullableStr(source.notes),
+      };
+    }),
+  };
+}
+
+function splitDuplicateSetupSources(sources: ParsedMarketSetupSource[]): {
+  uniqueSources: ParsedMarketSetupSource[];
+  skippedSources: SkippedSetupSource[];
+} {
+  const seen = new Map<string, ParsedMarketSetupSource>();
+  const uniqueSources: ParsedMarketSetupSource[] = [];
+  const skippedSources: SkippedSetupSource[] = [];
+
+  for (const source of sources) {
+    const existing = seen.get(source.normalized_url);
+    if (existing) {
+      skippedSources.push({
+        url: source.url,
+        normalized_url: source.normalized_url,
+        reason: 'duplicate',
+        duplicate_of: existing.url,
+      });
+      continue;
+    }
+
+    seen.set(source.normalized_url, source);
+    uniqueSources.push(source);
+  }
+
+  return { uniqueSources, skippedSources };
+}
+
+function marketSetupNextActions(marketId: string | null): string[] {
+  if (!marketId) {
+    return ['ncl markets setup --payload-file <JSON_FILE> --json'];
+  }
+  return [
+    `ncl markets get ${marketId} --json`,
+    `ncl market-sources collect --market-id ${marketId} --json`,
+    `ncl market-documents list --market-id ${marketId} --compact --json`,
+    `ncl market-candidates validate --market-id ${marketId} --payload-file <JSON_FILE> --dedupe --json`,
+  ];
 }
 
 function sourceProposalWithParsedJson(proposal: MarketSourceProposal) {

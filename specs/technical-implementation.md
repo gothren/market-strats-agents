@@ -40,6 +40,19 @@ Current main records:
 - `market_documents`: retrieved evidence artifacts.
 - `market_candidates`: reviewable companies, products, problems, capabilities, categories, and claims.
 
+## Guided Setup
+
+First-run market setup is an agent-facing CLI orchestration workflow, not a separate data model. The agent conducts the conversation, writes a setup JSON payload, dry-runs it, asks the user to confirm inferred values, and then applies it.
+
+`markets setup` applies existing primitives in one validated operation:
+
+- create a `market`
+- optionally upsert `market_boundaries`
+- add explicit `market_sources`
+- report duplicate/skipped source URLs and next actions
+
+The setup payload currently stores no independent setup profile. Seed companies should become evidence-backed `market_candidates` later. The default analysis lens is product strategist and can be captured in boundary notes when useful. Market maps remain continuously improvable and do not track completion.
+
 ## Source And Document Semantics
 
 `market_sources` are research surfaces or collections the agent is allowed to investigate. They are not always exact URLs to fetch.

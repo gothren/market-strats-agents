@@ -119,6 +119,219 @@ describe('markets CLI resource', () => {
       });
     }
   });
+
+  it('sets up a market with boundary and seed sources from one payload', async () => {
+    await registerMarketsResource();
+
+    const payloadFile = writePayload({
+      market: {
+        name: 'AI Security',
+        description: 'Security products for AI systems',
+      },
+      boundary: {
+        inclusions: 'Runtime AI app security, prompt injection defense',
+        exclusions: 'Generic cloud security',
+        adjacent_markets: 'AppSec, data security',
+        notes: 'Default lens: product strategist.',
+      },
+      sources: [
+        {
+          url: 'https://vendor.example.com/',
+          source_type: 'website',
+          trust_tier: 'official',
+          notes: 'Official website',
+        },
+        {
+          url: 'https://docs.vendor.example.com/',
+          source_type: 'docs',
+          trust_tier: 'official',
+          notes: 'Official docs',
+        },
+      ],
+    });
+
+    const resp = await dispatch(
+      {
+        id: 'req-market-setup',
+        command: 'markets-setup',
+        args: { payload_file: payloadFile },
+      },
+      { caller: 'host' },
+    );
+
+    expect(resp.ok).toBe(true);
+    if (resp.ok) {
+      expect(resp.data).toMatchObject({
+        dry_run: false,
+        market: {
+          name: 'AI Security',
+          description: 'Security products for AI systems',
+        },
+        boundary: {
+          inclusions: 'Runtime AI app security, prompt injection defense',
+          exclusions: 'Generic cloud security',
+          adjacent_markets: 'AppSec, data security',
+          notes: 'Default lens: product strategist.',
+        },
+        boundary_status: 'created',
+        added_sources: [
+          expect.objectContaining({ source_type: 'website', trust_tier: 'official' }),
+          expect.objectContaining({ source_type: 'docs', trust_tier: 'official' }),
+        ],
+        skipped_sources: [],
+        next_actions: expect.arrayContaining([
+          expect.stringContaining('market-sources collect'),
+          expect.stringContaining('market-documents list'),
+        ]),
+      });
+
+      const data = resp.data as { market: { id: string } };
+      const overview = await dispatch(
+        { id: 'req-get-setup-market', command: 'markets-get', args: { id: data.market.id } },
+        { caller: 'host' },
+      );
+      expect(overview.ok).toBe(true);
+      if (overview.ok) {
+        expect(overview.data).toMatchObject({
+          boundary: { inclusions: 'Runtime AI app security, prompt injection defense' },
+          sources: expect.arrayContaining([
+            expect.objectContaining({ url: 'https://vendor.example.com/' }),
+            expect.objectContaining({ url: 'https://docs.vendor.example.com/' }),
+          ]),
+        });
+      }
+    }
+  });
+
+  it('dry-runs market setup without writing rows', async () => {
+    await registerMarketsResource();
+
+    const payloadFile = writePayload({
+      market: { name: 'AI Security', description: null },
+      boundary: { inclusions: 'AI security', exclusions: null },
+      sources: [{ url: 'https://vendor.example.com', source_type: 'website', trust_tier: 'official' }],
+    });
+
+    const resp = await dispatch(
+      {
+        id: 'req-market-setup-dry-run',
+        command: 'markets-setup',
+        args: { payload_file: payloadFile, dry_run: true },
+      },
+      { caller: 'host' },
+    );
+
+    expect(resp.ok).toBe(true);
+    if (resp.ok) {
+      expect(resp.data).toMatchObject({
+        dry_run: true,
+        market: {
+          id: null,
+          name: 'AI Security',
+        },
+        boundary_status: 'planned',
+        added_sources: [],
+        planned_sources: [expect.objectContaining({ url: 'https://vendor.example.com' })],
+        skipped_sources: [],
+      });
+    }
+
+    const listed = await dispatch(
+      { id: 'req-list-after-dry-run', command: 'markets-list', args: {} },
+      { caller: 'host' },
+    );
+    expect(listed.ok).toBe(true);
+    if (listed.ok) {
+      expect(listed.data).toEqual({ markets: [] });
+    }
+  });
+
+  it('reports duplicate setup source URLs without adding them twice', async () => {
+    await registerMarketsResource();
+
+    const payloadFile = writePayload({
+      market: { name: 'AI Security', description: null },
+      sources: [
+        { url: 'https://vendor.example.com/docs/', source_type: 'docs', trust_tier: 'official' },
+        { url: 'https://vendor.example.com/docs', source_type: 'docs', trust_tier: 'official' },
+      ],
+    });
+
+    const resp = await dispatch(
+      {
+        id: 'req-market-setup-duplicate-source',
+        command: 'markets-setup',
+        args: { payload_file: payloadFile },
+      },
+      { caller: 'host' },
+    );
+
+    expect(resp.ok).toBe(true);
+    if (resp.ok) {
+      expect(resp.data).toMatchObject({
+        added_sources: [expect.objectContaining({ url: 'https://vendor.example.com/docs/' })],
+        skipped_sources: [
+          {
+            url: 'https://vendor.example.com/docs',
+            normalized_url: 'https://vendor.example.com/docs',
+            reason: 'duplicate',
+          },
+        ],
+      });
+    }
+  });
+
+  it('fails setup clearly for invalid payloads', async () => {
+    await registerMarketsResource();
+
+    const missingName = writePayload({ market: { description: 'Missing name' } });
+    const invalidUrl = writePayload({
+      market: { name: 'AI Security' },
+      sources: [{ url: 'not-a-url', source_type: 'website', trust_tier: 'official' }],
+    });
+    const invalidSourceType = writePayload({
+      market: { name: 'AI Security' },
+      sources: [{ url: 'https://example.com', source_type: 'url', trust_tier: 'official' }],
+    });
+    const invalidTrustTier = writePayload({
+      market: { name: 'AI Security' },
+      sources: [{ url: 'https://example.com', source_type: 'website', trust_tier: 'vendor' }],
+    });
+
+    await expect(
+      dispatch(
+        { id: 'req-setup-missing-name', command: 'markets-setup', args: { payload_file: missingName } },
+        { caller: 'host' },
+      ),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'invalid-args', message: expect.stringContaining('name') } });
+    await expect(
+      dispatch(
+        { id: 'req-setup-invalid-url', command: 'markets-setup', args: { payload_file: invalidUrl } },
+        { caller: 'host' },
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'invalid-args', message: expect.stringContaining('valid URL') },
+    });
+    await expect(
+      dispatch(
+        { id: 'req-setup-invalid-source-type', command: 'markets-setup', args: { payload_file: invalidSourceType } },
+        { caller: 'host' },
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'invalid-args', message: expect.stringContaining('source_type') },
+    });
+    await expect(
+      dispatch(
+        { id: 'req-setup-invalid-trust-tier', command: 'markets-setup', args: { payload_file: invalidTrustTier } },
+        { caller: 'host' },
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'invalid-args', message: expect.stringContaining('trust_tier') },
+    });
+  });
 });
 
 describe('market boundaries CLI resource', () => {

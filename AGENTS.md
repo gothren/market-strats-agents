@@ -46,45 +46,54 @@ If missing, ask for:
 - inclusions
 - exclusions
 - adjacent markets
-- seed source URLs
+- seed source URLs and whether they are `website`, `docs`, or `exact_url`
 
-Then run:
+Write a setup payload to `/private/tmp/<market-slug>-setup.json`:
 
-```bash
-pnpm ncl markets create --name "<NAME>" --description "<DESCRIPTION>" --json
+```json
+{
+  "market": {
+    "name": "<NAME>",
+    "description": "<DESCRIPTION>"
+  },
+  "boundary": {
+    "inclusions": "<INCLUSIONS>",
+    "exclusions": "<EXCLUSIONS>",
+    "adjacent_markets": "<ADJACENT_MARKETS>",
+    "notes": "Default lens: product strategist."
+  },
+  "sources": [
+    {
+      "url": "https://vendor.example.com",
+      "source_type": "website",
+      "trust_tier": "official",
+      "notes": "Official vendor website."
+    }
+  ]
+}
 ```
 
-Use the returned `market.id` for follow-up calls.
+Use `website` for vendor/product marketing surfaces, `docs` for documentation roots, and `exact_url` only for one stable page. Prefer `trust_tier: "official"` for official vendor-owned sources.
 
-If boundary details were provided:
-
-```bash
-pnpm ncl market-boundaries update \
-  --market-id <MARKET_ID> \
-  --inclusions "<INCLUSIONS>" \
-  --exclusions "<EXCLUSIONS>" \
-  --adjacent-markets "<ADJACENT_MARKETS>" \
-  --json
-```
-
-For each seed source URL:
+Dry-run the setup before writing durable state:
 
 ```bash
-pnpm ncl market-sources add \
-  --market-id <MARKET_ID> \
-  --url "<URL>" \
-  --source-type exact_url \
-  --trust-tier trusted \
-  --json
+pnpm ncl markets setup --payload-file /private/tmp/<market-slug>-setup.json --dry-run --json
 ```
 
-Verify the final state:
+If the dry run is valid and the user has confirmed any inferred values, apply it:
+
+```bash
+pnpm ncl markets setup --payload-file /private/tmp/<market-slug>-setup.json --json
+```
+
+Verify the final state using the returned `market.id`:
 
 ```bash
 pnpm ncl markets get <MARKET_ID> --json
 ```
 
-Report the market id, boundary status, and number of sources added.
+Report the market id, boundary status, sources added, duplicate/skipped sources, and next suggested action.
 
 ## Fetching And Reviewing Market Evidence
 
@@ -486,6 +495,7 @@ Do not create accepted facts directly from documents. Imported extraction output
 Implemented:
 
 - market creation/list/get
+- guided market setup with dry-run validation
 - market boundary upsert
 - market source add/list
 - source proposal import/list/get/review

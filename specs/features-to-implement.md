@@ -15,30 +15,7 @@ Website/docs crawling v1 is already implemented. The active roadmap below priori
 
 # Active Prioritized Roadmap
 
-## P1 - Guided Market Setup Workflow
-
-Goal:
-
-- Make first market setup easy for non-technical users and agent-driven sessions.
-
-Context:
-
-- Market creation and boundary update exist, but the full guided setup flow from the product spec does not.
-- The agent needs enough structured context to avoid market drift and unsupported guesses.
-
-Implementation notes:
-
-- Support collecting market name, description, inclusions, exclusions, adjacent markets, seed companies, seed URLs, preferred source types, and analysis lens.
-- The tool layer should support saving structured setup data; the agent can handle the conversation.
-- Any inferred setup values must be confirmed by the user before durable write.
-
-Acceptance:
-
-- Agent can create a market, set boundary, add seed sources, and report final setup state without ad hoc steps.
-- Missing required fields produce clear next actions.
-- Existing market get/list output is sufficient to verify setup completion.
-
-## P2 - RSS Connector
+## P1 - RSS Connector
 
 Goal:
 
@@ -62,7 +39,7 @@ Acceptance:
 - Repeated collection does not duplicate unchanged entries.
 - Failed or malformed feed entries are auditable.
 
-## P3 - Slack Connector
+## P2 - Slack Connector
 
 Goal:
 
@@ -86,7 +63,7 @@ Acceptance:
 - Stored Slack documents have clear provenance and privacy/access metadata.
 - Missing credentials or permissions produce clear unsupported/failed responses.
 
-## P4 - Review States For Unknowns, Conflicts, And Staleness
+## P3 - Review States For Unknowns, Conflicts, And Staleness
 
 Goal:
 
