@@ -3065,44 +3065,109 @@ function candidatePayloadPreview(candidate: CandidatePayloadItem) {
   };
 }
 
+type CandidateValidationError = {
+  index: number;
+  candidate_type: MarketCandidateType;
+  name: string;
+  message: string;
+};
+
+function candidateValidationError(
+  candidate: CandidatePayloadItem,
+  index: number,
+  message: string,
+): CandidateValidationError {
+  return {
+    index,
+    candidate_type: candidate.candidate_type,
+    name: normalizeCandidateDisplayName(candidate.name),
+    message,
+  };
+}
+
+function validateCandidateMetadata(candidate: CandidatePayloadItem, index: number): CandidateValidationError[] {
+  if (candidate.metadata === null || candidate.metadata === undefined) return [];
+  if (typeof candidate.metadata !== 'object' || Array.isArray(candidate.metadata)) {
+    return [candidateValidationError(candidate, index, 'candidate metadata must be an object when provided')];
+  }
+
+  const metadata = candidate.metadata as Record<string, unknown>;
+  if (metadata.uncertainty === undefined || metadata.uncertainty === null) return [];
+  if (typeof metadata.uncertainty !== 'object' || Array.isArray(metadata.uncertainty)) {
+    return [
+      candidateValidationError(candidate, index, 'candidate metadata.uncertainty must be an object when provided'),
+    ];
+  }
+
+  const uncertainty = metadata.uncertainty as Record<string, unknown>;
+  if (
+    typeof uncertainty.status !== 'string' ||
+    !CANDIDATE_UNCERTAINTY_STATUSES.includes(uncertainty.status as CandidateUncertaintyStatus)
+  ) {
+    return [
+      candidateValidationError(
+        candidate,
+        index,
+        `candidate metadata.uncertainty.status must be one of: ${CANDIDATE_UNCERTAINTY_STATUSES.join(', ')}`,
+      ),
+    ];
+  }
+
+  const errors: CandidateValidationError[] = [];
+  for (const key of ['reasons', 'conflicts_with'] as const) {
+    const value = uncertainty[key];
+    if (value !== undefined && (!Array.isArray(value) || value.some((item) => typeof item !== 'string'))) {
+      errors.push(
+        candidateValidationError(candidate, index, `candidate metadata.uncertainty.${key} must be an array of strings`),
+      );
+    }
+  }
+  for (const key of ['note', 'marked_by', 'marked_at'] as const) {
+    const value = uncertainty[key];
+    if (value !== undefined && typeof value !== 'string') {
+      errors.push(candidateValidationError(candidate, index, `candidate metadata.uncertainty.${key} must be a string`));
+    }
+  }
+  return errors;
+}
+
 function validateCandidateEvidence(
   marketId: string,
   candidate: CandidatePayloadItem,
   index: number,
-): Array<{ index: number; candidate_type: MarketCandidateType; name: string; message: string }> {
+): CandidateValidationError[] {
   if (candidate.evidence.length === 0) {
-    return [
-      {
-        index,
-        candidate_type: candidate.candidate_type,
-        name: normalizeCandidateDisplayName(candidate.name),
-        message: 'candidate evidence must include at least one market document',
-      },
-    ];
+    return [candidateValidationError(candidate, index, 'candidate evidence must include at least one market document')];
   }
 
-  const errors: Array<{ index: number; candidate_type: MarketCandidateType; name: string; message: string }> = [];
+  const errors: CandidateValidationError[] = [];
   for (const item of candidate.evidence) {
     const document = getMarketDocument(item.document_id);
     if (!document) {
-      errors.push({
-        index,
-        candidate_type: candidate.candidate_type,
-        name: normalizeCandidateDisplayName(candidate.name),
-        message: `candidate evidence document not found: ${item.document_id}`,
-      });
+      errors.push(
+        candidateValidationError(candidate, index, `candidate evidence document not found: ${item.document_id}`),
+      );
       continue;
     }
     if (document.market_id !== marketId) {
-      errors.push({
-        index,
-        candidate_type: candidate.candidate_type,
-        name: normalizeCandidateDisplayName(candidate.name),
-        message: `candidate evidence document belongs to a different market: ${item.document_id}`,
-      });
+      errors.push(
+        candidateValidationError(
+          candidate,
+          index,
+          `candidate evidence document belongs to a different market: ${item.document_id}`,
+        ),
+      );
     }
   }
   return errors;
+}
+
+function validateCandidatePayload(
+  marketId: string,
+  candidate: CandidatePayloadItem,
+  index: number,
+): CandidateValidationError[] {
+  return [...validateCandidateMetadata(candidate, index), ...validateCandidateEvidence(marketId, candidate, index)];
 }
 
 register({
@@ -3120,14 +3185,14 @@ register({
     if (!market) throw new Error(`market not found: ${args.market_id}`);
 
     const candidates = parseCandidatePayload(args.payload_file);
-    const errors: Array<{ index: number; candidate_type: MarketCandidateType; name: string; message: string }> = [];
+    const errors: CandidateValidationError[] = [];
     const importable_candidates: Array<ReturnType<typeof candidatePayloadPreview>> = [];
     const duplicate_candidates: Array<ReturnType<typeof candidatePayloadPreview> & { existing_id: string }> = [];
 
     candidates.forEach((candidate, index) => {
-      const evidenceErrors = validateCandidateEvidence(args.market_id, candidate, index);
-      if (evidenceErrors.length > 0) {
-        errors.push(...evidenceErrors);
+      const candidateErrors = validateCandidatePayload(args.market_id, candidate, index);
+      if (candidateErrors.length > 0) {
+        errors.push(...candidateErrors);
         return;
       }
 
@@ -3198,7 +3263,12 @@ register({
     try {
       const imported: MarketCandidate[] = [];
       const skipped_duplicates: Array<{ candidate_type: MarketCandidateType; name: string; existing_id: string }> = [];
-      for (const candidate of candidates) {
+      for (const [index, candidate] of candidates.entries()) {
+        const candidateErrors = validateCandidatePayload(args.market_id, candidate, index);
+        if (candidateErrors.length > 0) {
+          throw new Error(candidateErrors.map((error) => error.message).join('; '));
+        }
+
         const duplicate = args.dedupe
           ? findDuplicateMarketCandidate(args.market_id, candidate.candidate_type, candidate.name)
           : undefined;
@@ -3619,9 +3689,9 @@ register({
     if (!existing) throw new Error(`market candidate not found: ${args.id}`);
 
     const payload = parseCandidateUpdatePayload(args.payload_file);
-    const evidenceErrors = validateCandidateEvidence(existing.market_id, payload, 0);
-    if (evidenceErrors.length > 0) {
-      throw new Error(evidenceErrors.map((error) => error.message).join('; '));
+    const candidateErrors = validateCandidatePayload(existing.market_id, payload, 0);
+    if (candidateErrors.length > 0) {
+      throw new Error(candidateErrors.map((error) => error.message).join('; '));
     }
 
     const candidate = updateMarketCandidate(args.id, {

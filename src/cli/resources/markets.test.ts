@@ -4177,6 +4177,60 @@ describe('market candidates CLI resource', () => {
     }
   });
 
+  it('reports invalid candidate uncertainty metadata during validation', async () => {
+    const { marketId, documentId } = await createDocumentFixture();
+
+    const validate = await dispatch(
+      {
+        id: 'req-candidates-validate-invalid-uncertainty',
+        command: 'market-candidates-validate',
+        args: {
+          market_id: marketId,
+          'payload-file': writePayload({
+            candidates: [
+              {
+                candidate_type: 'capability',
+                name: 'Runtime AI monitoring',
+                summary: 'Monitors AI application behavior at runtime.',
+                confidence: 'medium',
+                evidence: [{ document_id: documentId, quote: 'protects AI applications', note: 'Runtime evidence' }],
+                metadata: {
+                  stable_key: 'capability:runtime_ai_monitoring',
+                  uncertainty: {
+                    status: 'maybe',
+                    reasons: ['single_source'],
+                  },
+                },
+              },
+            ],
+          }),
+        },
+      },
+      { caller: 'host' },
+    );
+
+    expect(validate.ok).toBe(true);
+    if (validate.ok) {
+      expect(validate.data).toMatchObject({
+        valid: false,
+        summary: {
+          total: 1,
+          importable: 0,
+          duplicate_count: 0,
+          error_count: 1,
+        },
+        errors: [
+          {
+            index: 0,
+            candidate_type: 'capability',
+            name: 'Runtime AI monitoring',
+            message: expect.stringContaining('metadata.uncertainty.status'),
+          },
+        ],
+      });
+    }
+  });
+
   it('rejects candidate import when evidence is missing', async () => {
     const { marketId } = await createDocumentFixture();
     const payloadFile = writePayload({
@@ -4233,6 +4287,42 @@ describe('market candidates CLI resource', () => {
     if (!imported.ok) {
       expect(imported.error.code).toBe('handler-error');
       expect(imported.error.message).toMatch(/document.*market/i);
+    }
+  });
+
+  it('rejects candidate import with invalid uncertainty metadata', async () => {
+    const { marketId, documentId } = await createDocumentFixture();
+    const payloadFile = writePayload({
+      candidates: [
+        {
+          candidate_type: 'capability',
+          name: 'Runtime AI monitoring',
+          summary: 'Monitors AI application behavior at runtime.',
+          confidence: 'medium',
+          evidence: [{ document_id: documentId, quote: 'protects AI applications', note: 'Runtime evidence' }],
+          metadata: {
+            stable_key: 'capability:runtime_ai_monitoring',
+            uncertainty: {
+              status: 'maybe',
+            },
+          },
+        },
+      ],
+    });
+
+    const imported = await dispatch(
+      {
+        id: 'req-candidates-import-invalid-uncertainty',
+        command: 'market-candidates-import',
+        args: { market_id: marketId, 'payload-file': payloadFile },
+      },
+      { caller: 'host' },
+    );
+
+    expect(imported.ok).toBe(false);
+    if (!imported.ok) {
+      expect(imported.error.code).toBe('handler-error');
+      expect(imported.error.message).toContain('metadata.uncertainty.status');
     }
   });
 

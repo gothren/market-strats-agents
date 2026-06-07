@@ -126,7 +126,7 @@ Supported uncertainty statuses:
 - `conflicting`: stored evidence disagrees.
 - `stale`: evidence may no longer reflect the current market.
 
-Agents can write uncertainty metadata when importing or updating candidates. Candidate list/get, read-only market maps, and Markdown reports surface parsed uncertainty. Candidate audit can suggest `weak_evidence` or `stale` uncertainty from deterministic checks such as low confidence, single evidence, missing quotes, quotes not found in stored documents, and evidence older than 90 days. Audit suggestions are read-only and do not mutate metadata; agents must update the candidate if the uncertainty should become durable.
+Agents can write uncertainty metadata when importing or updating candidates. Candidate validation, import, and update reject unsupported uncertainty statuses or malformed uncertainty fields so invalid metadata cannot silently disappear downstream. Candidate list/get, read-only market maps, and Markdown reports surface parsed uncertainty. Candidate audit can suggest `weak_evidence` or `stale` uncertainty from deterministic checks such as low confidence, single evidence, missing quotes, quotes not found in stored documents, and evidence older than 90 days. Audit suggestions are read-only and do not mutate metadata; agents must update the candidate if the uncertainty should become durable.
 
 ## Source Proposal Rules
 

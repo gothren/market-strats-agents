@@ -426,6 +426,7 @@ If evidence is weak, stale, conflicting, or unknown, keep the candidate review s
 ```
 
 Valid uncertainty statuses are `unknown`, `weak_evidence`, `conflicting`, and `stale`. Use `unknown` when the agent cannot resolve an important point from stored evidence, `weak_evidence` when support exists but is thin or vendor-only, `conflicting` when stored evidence disagrees, and `stale` when evidence may no longer reflect the current market.
+`market-candidates validate`, `import`, and `update` reject unsupported uncertainty statuses or malformed uncertainty fields, so fix metadata errors before importing.
 
 Validate the payload before importing. Use `--dedupe` by default for agent-generated extraction payloads so repeated extraction runs flag duplicates instead of creating duplicate candidates:
 
