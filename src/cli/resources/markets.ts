@@ -2,6 +2,7 @@ import {
   addMarketSource,
   completeMarketRun,
   createMarketCandidate,
+  createMarketCrawlUrl,
   createMarketDocument,
   createMarket,
   createMarketSourceProposal,
@@ -15,10 +16,15 @@ import {
   getMarketBoundary,
   getMarketCandidate,
   getMarketDocument,
+  getMarketRun,
   getMarketSourceProposal,
   findDuplicateMarketCandidate,
   listMarketCandidates,
+  listMarketCrawlUrls,
+  listMarketCrawlUrlsForRun,
+  listOpenMarketCrawlUrls,
   listMarketDocuments,
+  listMarketRuns,
   listMarketSearchRuns,
   listMarketSourceProposals,
   listMarketSources,
@@ -29,12 +35,16 @@ import {
   reviewMarketSourceProposal,
   summarizeMarketCandidates,
   updateMarketCandidate,
+  updateMarketCrawlUrlStatus,
   upsertMarketBoundary,
   type MarketCandidate,
   type MarketCandidateConfidence,
   type MarketCandidateEvidence,
   type MarketCandidateStatus,
   type MarketCandidateType,
+  type MarketCrawlUrl,
+  type MarketCrawlUrlReason,
+  type MarketCrawlUrlStatus,
   type MarketDocument,
   type MarketRun,
   type MarketSearchRun,
@@ -71,6 +81,7 @@ const HELP_CENTER_FETCH_HEADERS = {
   'Upgrade-Insecure-Requests': '1',
 };
 const MIN_CRAWLED_TEXT_LENGTH = 300;
+const DEFAULT_CRAWL_ROW_LIMIT = 25;
 const LOW_VALUE_CRAWL_PATH_FRAGMENTS = [
   '/careers',
   '/jobs',
@@ -1106,6 +1117,304 @@ register({
   },
 });
 
+function parseRunSummary(run: MarketRun): Record<string, unknown> {
+  if (!run.summary) return {};
+  try {
+    const parsed = JSON.parse(run.summary);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function countsByReason(rows: MarketCrawlUrl[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const row of rows) counts[row.reason] = (counts[row.reason] ?? 0) + 1;
+  return counts;
+}
+
+function frontierRows(rows: MarketCrawlUrl[]): MarketCrawlUrl[] {
+  return rows.filter((row) => row.status === 'open' && (row.reason === 'max_pages' || row.reason === 'max_depth'));
+}
+
+function frontierAuditRows(rows: MarketCrawlUrl[]): MarketCrawlUrl[] {
+  return rows.filter((row) => row.reason === 'max_pages' || row.reason === 'max_depth');
+}
+
+function limitedRows<T>(rows: T[], limit: number): T[] {
+  return rows.slice(0, limit);
+}
+
+function collectionRowsForSource(rows: MarketCrawlUrl[], sourceId: string): MarketCrawlUrl[] {
+  return rows.filter((row) => row.source_id === sourceId);
+}
+
+function documentsForSource(documents: MarketDocument[], sourceId: string): MarketDocument[] {
+  return documents.filter((document) => document.source_id === sourceId);
+}
+
+function latestSuccessfulDocumentForSource(documents: MarketDocument[], sourceId: string): MarketDocument | null {
+  return latestByCreatedAt(
+    documents.filter((document) => document.source_id === sourceId && document.status === 'fetched'),
+  );
+}
+
+function latestByCreatedAt<T extends { created_at?: string; fetched_at?: string; started_at?: string; id: string }>(
+  rows: T[],
+): T | null {
+  const sorted = [...rows].sort((a, b) => {
+    const left = a.created_at ?? a.fetched_at ?? a.started_at ?? '';
+    const right = b.created_at ?? b.fetched_at ?? b.started_at ?? '';
+    return right.localeCompare(left) || b.id.localeCompare(a.id);
+  });
+  return sorted[0] ?? null;
+}
+
+register({
+  name: 'market-runs-get',
+  description: 'Inspect a market run and optional persisted crawl frontier/skipped URL rows.',
+  resource: 'market-runs',
+  access: 'open',
+  parseArgs: (raw) => ({
+    id: str(raw.id, 'id'),
+    include_frontier: bool(raw.include_frontier ?? raw['include-frontier']),
+    frontier_limit: positiveInt(raw.frontier_limit ?? raw['frontier-limit'], DEFAULT_CRAWL_ROW_LIMIT, 'frontier_limit'),
+    include_skipped: bool(raw.include_skipped ?? raw['include-skipped']),
+    skipped_limit: positiveInt(raw.skipped_limit ?? raw['skipped-limit'], DEFAULT_CRAWL_ROW_LIMIT, 'skipped_limit'),
+  }),
+  handler: async (args) => {
+    const run = getMarketRun(args.id);
+    if (!run) throw new Error(`market run not found: ${args.id}`);
+
+    const crawlRows = listMarketCrawlUrlsForRun(run.id);
+    const failedUrls = listMarketDocuments(run.market_id)
+      .filter((document) => document.run_id === run.id && document.status === 'failed')
+      .map((document) => ({
+        source_id: document.source_id,
+        url: document.url,
+        status: document.status,
+        error: document.error,
+        document_id: document.id,
+      }));
+    const frontier = frontierAuditRows(crawlRows);
+    const skipped = crawlRows.filter((row) => row.status === 'skipped');
+    const returnedFrontier = args.include_frontier ? limitedRows(frontier, args.frontier_limit) : [];
+    const returnedSkipped = args.include_skipped ? limitedRows(skipped, args.skipped_limit) : [];
+
+    return {
+      run,
+      summary: parseRunSummary(run),
+      failed_urls: failedUrls,
+      skipped_counts_by_reason: countsByReason(crawlRows),
+      frontier_count: frontier.length,
+      frontier_returned: returnedFrontier.length,
+      frontier_limit: args.frontier_limit,
+      skipped_count: skipped.length,
+      skipped_returned: returnedSkipped.length,
+      skipped_limit: args.skipped_limit,
+      frontier: args.include_frontier ? returnedFrontier : undefined,
+      skipped_urls: args.include_skipped ? returnedSkipped : undefined,
+      available_commands: [
+        `ncl market-sources crawl-context --market-id ${run.market_id} --json`,
+        `ncl market-documents list --market-id ${run.market_id} --compact --json`,
+      ],
+    };
+  },
+});
+
+register({
+  name: 'market-sources-crawl-context',
+  description: 'Summarize crawl freshness, completeness, frontier, and failures for market sources.',
+  resource: 'market-sources',
+  access: 'open',
+  parseArgs: (raw) => ({
+    market_id: str(raw.market_id ?? raw['market-id'], 'market_id'),
+    source_id: optionalStr(raw.source_id ?? raw['source-id']),
+    stale_days: positiveInt(raw.stale_days ?? raw['stale-days'], 60, 'stale_days'),
+    include_frontier: bool(raw.include_frontier ?? raw['include-frontier']),
+    frontier_limit: positiveInt(raw.frontier_limit ?? raw['frontier-limit'], DEFAULT_CRAWL_ROW_LIMIT, 'frontier_limit'),
+    include_skipped: bool(raw.include_skipped ?? raw['include-skipped']),
+    skipped_limit: positiveInt(raw.skipped_limit ?? raw['skipped-limit'], DEFAULT_CRAWL_ROW_LIMIT, 'skipped_limit'),
+  }),
+  handler: async (args) => {
+    const market = getMarket(args.market_id);
+    if (!market) throw new Error(`market not found: ${args.market_id}`);
+
+    const allSources = listMarketSources(args.market_id).filter((source) => source.status === 'active');
+    const sources = args.source_id ? allSources.filter((source) => source.id === args.source_id) : allSources;
+    if (args.source_id && sources.length === 0) throw new Error(`market source not found: ${args.source_id}`);
+
+    const documents = listMarketDocuments(args.market_id);
+    const runs = listMarketRuns(args.market_id).filter((run) => run.kind === 'collection');
+    const crawlRows = listMarketCrawlUrls(args.market_id);
+    const searchHistory = summarizeSearchHistory(listMarketSearchRuns(args.market_id));
+    const staleCutoffMs = Date.now() - args.stale_days * 24 * 60 * 60 * 1000;
+    const sourceSummaries = sources.map((source) => {
+      const sourceDocuments = documentsForSource(documents, source.id);
+      const sourceRows = collectionRowsForSource(crawlRows, source.id);
+      const fetchedDocuments = sourceDocuments.filter((document) => document.status === 'fetched');
+      const failedDocuments = sourceDocuments.filter((document) => document.status === 'failed');
+      const openFrontier = frontierRows(sourceRows);
+      const latestDocument = latestByCreatedAt(sourceDocuments);
+      const latestSuccessfulDocument = latestByCreatedAt(fetchedDocuments);
+      const latestRow = latestByCreatedAt(sourceRows);
+      const latestRunId = latestDocument?.run_id ?? latestRow?.run_id ?? null;
+      const diagnostics: Array<{
+        source_id: string;
+        url: string;
+        diagnostic_type: string;
+        evidence: Record<string, unknown>;
+      }> = [];
+
+      if (sourceDocuments.length === 0 && sourceRows.length === 0) {
+        diagnostics.push({
+          source_id: source.id,
+          url: source.url,
+          diagnostic_type: 'source_never_collected',
+          evidence: {},
+        });
+      }
+      if (fetchedDocuments.length === 0) {
+        diagnostics.push({
+          source_id: source.id,
+          url: source.url,
+          diagnostic_type: 'zero_documents',
+          evidence: { fetched_documents: 0 },
+        });
+      }
+      if (source.source_type === 'docs' && fetchedDocuments.length === 0) {
+        diagnostics.push({
+          source_id: source.id,
+          url: source.url,
+          diagnostic_type: 'docs_source_zero_yield',
+          evidence: { source_type: source.source_type },
+        });
+      }
+      if (failedDocuments.length > 0 && fetchedDocuments.length === 0) {
+        diagnostics.push({
+          source_id: source.id,
+          url: source.url,
+          diagnostic_type: 'all_documents_failed',
+          evidence: { failed_documents: failedDocuments.length },
+        });
+      } else if (failedDocuments.length > 0 && failedDocuments.length / sourceDocuments.length >= 0.5) {
+        diagnostics.push({
+          source_id: source.id,
+          url: source.url,
+          diagnostic_type: 'high_failure_rate',
+          evidence: { failed_documents: failedDocuments.length, total_documents: sourceDocuments.length },
+        });
+      }
+      if (openFrontier.length > 0) {
+        diagnostics.push({
+          source_id: source.id,
+          url: source.url,
+          diagnostic_type: 'frontier_available',
+          evidence: countsByReason(openFrontier),
+        });
+      }
+      if (latestSuccessfulDocument && new Date(latestSuccessfulDocument.fetched_at).getTime() < staleCutoffMs) {
+        diagnostics.push({
+          source_id: source.id,
+          url: source.url,
+          diagnostic_type: 'stale_source',
+          evidence: { latest_successful_fetch_at: latestSuccessfulDocument.fetched_at, stale_days: args.stale_days },
+        });
+      }
+
+      return {
+        source_id: source.id,
+        url: source.url,
+        source_type: source.source_type,
+        trust_tier: source.trust_tier,
+        status: source.status,
+        document_counts: {
+          fetched: fetchedDocuments.length,
+          failed: failedDocuments.length,
+          unchanged: 0,
+        },
+        latest_successful_fetch_at: latestSuccessfulDocument?.fetched_at ?? null,
+        latest_collection_run_id: latestRunId,
+        frontier_counts: openFrontier.length > 0 ? countsByReason(openFrontier) : undefined,
+        diagnostics,
+      };
+    });
+    const frontier = frontierRows(crawlRows).filter((row) => sources.some((source) => source.id === row.source_id));
+    const failures = documents
+      .filter((document) => document.status === 'failed' && sources.some((source) => source.id === document.source_id))
+      .map((document) => ({
+        source_id: document.source_id,
+        url: document.url,
+        status: document.status,
+        error: document.error,
+        run_id: document.run_id,
+        document_id: document.id,
+      }));
+    const skipped = crawlRows.filter(
+      (row) => row.status === 'skipped' && sources.some((source) => source.id === row.source_id),
+    );
+    const returnedFrontier = args.include_frontier ? limitedRows(frontier, args.frontier_limit) : [];
+    const returnedSkipped = args.include_skipped ? limitedRows(skipped, args.skipped_limit) : [];
+    const staleSources = sourceSummaries.filter((source) =>
+      source.diagnostics.some((diagnostic) => diagnostic.diagnostic_type === 'stale_source'),
+    );
+
+    return {
+      market_id: args.market_id,
+      summary: {
+        active_sources: sources.length,
+        sources_never_collected: sourceSummaries.filter((source) =>
+          source.diagnostics.some((diagnostic) => diagnostic.diagnostic_type === 'source_never_collected'),
+        ).length,
+        sources_with_frontier: sourceSummaries.filter((source) => source.frontier_counts).length,
+        sources_with_recent_failures: sourceSummaries.filter((source) => source.document_counts.failed > 0).length,
+        stale_sources: staleSources.length,
+      },
+      search_coverage: {
+        recent_queries: searchHistory.recent_searches.length,
+        stale_queries: searchHistory.stale_searches.length,
+        recommendation: searchHistory.recent_searches.length > 0 ? 'search_fresh' : 'no_recent_search_memory',
+      },
+      source_coverage: {
+        active_sources: sources.length,
+        source_types: sources.reduce<Record<string, number>>((counts, source) => {
+          counts[source.source_type] = (counts[source.source_type] ?? 0) + 1;
+          return counts;
+        }, {}),
+      },
+      crawl_freshness: {
+        stale_days: args.stale_days,
+        stale_sources: staleSources.map((source) => ({ source_id: source.source_id, url: source.url })),
+      },
+      crawl_completeness: {
+        open_frontier_urls: frontier.length,
+        frontier_counts_by_reason: countsByReason(frontier),
+        persisted_frontier_available: crawlRows.length > 0,
+      },
+      sources: sourceSummaries,
+      recent_runs: runs.slice(0, 5).map((run) => ({ run, summary: parseRunSummary(run) })),
+      frontier_count: frontier.length,
+      frontier_returned: returnedFrontier.length,
+      frontier_limit: args.frontier_limit,
+      frontier: args.include_frontier ? returnedFrontier : [],
+      failures,
+      skipped_count: skipped.length,
+      skipped_returned: returnedSkipped.length,
+      skipped_limit: args.skipped_limit,
+      skipped_urls: args.include_skipped ? returnedSkipped : undefined,
+      documents: {
+        fetched: documents.filter((document) => document.status === 'fetched').length,
+        failed: documents.filter((document) => document.status === 'failed').length,
+      },
+      available_commands: [
+        `ncl market-sources collect --market-id ${args.market_id} --json`,
+        `ncl market-runs get <RUN_ID> --include-frontier --json`,
+        `ncl market-documents list --market-id ${args.market_id} --compact --json`,
+      ],
+    };
+  },
+});
+
 function sha256(text: string): string {
   return `sha256:${createHash('sha256').update(text).digest('hex')}`;
 }
@@ -1234,6 +1543,16 @@ interface CollectedDocumentResult {
   reason?: string;
 }
 
+interface CrawlSkippedUrl {
+  source_id: string;
+  url: string;
+  reason: MarketCrawlUrlReason;
+  depth: number | null;
+  discovered_from_url: string | null;
+  priority_score: number;
+  status: MarketCrawlUrlStatus;
+}
+
 async function storeFetchedPage(args: {
   source: MarketSource;
   run: MarketRun;
@@ -1355,43 +1674,97 @@ async function collectCrawlSource(args: {
   run: MarketRun;
   maxPages: number;
   maxDepth: number;
+  startUrls?: Array<{
+    url: string;
+    depth: number;
+    discoveredFromUrl: string | null;
+    frontierRowId?: string;
+  }>;
 }): Promise<{
   results: CollectedDocumentResult[];
-  skippedUrls: Array<{ source_id: string; url: string; reason: string }>;
+  skippedUrls: CrawlSkippedUrl[];
+  frontierUpdates: Array<{ id: string; status: MarketCrawlUrlStatus }>;
   visited: number;
 }> {
   const startUrl = normalizeCrawlUrl(args.source.url, args.source.url);
   if (!startUrl) {
     return {
       results: [],
-      skippedUrls: [{ source_id: args.source.id, url: args.source.url, reason: 'invalid_url' }],
+      skippedUrls: [
+        {
+          source_id: args.source.id,
+          url: args.source.url,
+          reason: 'invalid_url',
+          depth: null,
+          discovered_from_url: null,
+          priority_score: 0,
+          status: 'skipped',
+        },
+      ],
+      frontierUpdates: [],
       visited: 0,
     };
   }
 
   const origin = new URL(startUrl).origin;
-  const queue: Array<{ url: string; depth: number }> = [{ url: startUrl, depth: 0 }];
+  const queue: Array<{
+    url: string;
+    depth: number;
+    discoveredFromUrl: string | null;
+    frontierRowId?: string;
+  }> =
+    args.startUrls && args.startUrls.length > 0
+      ? args.startUrls
+      : [{ url: startUrl, depth: 0, discoveredFromUrl: null }];
   const seen = new Set<string>();
   const results: CollectedDocumentResult[] = [];
-  const skippedUrls: Array<{ source_id: string; url: string; reason: string }> = [];
+  const skippedUrls: CrawlSkippedUrl[] = [];
+  const frontierUpdates: Array<{ id: string; status: MarketCrawlUrlStatus }> = [];
   let visited = 0;
 
   while (queue.length > 0) {
     if (visited >= args.maxPages) {
       for (const queued of queue) {
-        skippedUrls.push({ source_id: args.source.id, url: queued.url, reason: 'max_pages' });
+        skippedUrls.push({
+          source_id: args.source.id,
+          url: queued.url,
+          reason: 'max_pages',
+          depth: queued.depth,
+          discovered_from_url: queued.discoveredFromUrl,
+          priority_score: highValueCrawlScore(queued.url),
+          status: 'open',
+        });
+        if (queued.frontierRowId) frontierUpdates.push({ id: queued.frontierRowId, status: 'superseded' });
       }
       break;
     }
 
     const current = queue.shift()!;
     if (seen.has(current.url)) {
-      skippedUrls.push({ source_id: args.source.id, url: current.url, reason: 'duplicate' });
+      skippedUrls.push({
+        source_id: args.source.id,
+        url: current.url,
+        reason: 'duplicate',
+        depth: current.depth,
+        discovered_from_url: current.discoveredFromUrl,
+        priority_score: highValueCrawlScore(current.url),
+        status: 'skipped',
+      });
+      if (current.frontierRowId) frontierUpdates.push({ id: current.frontierRowId, status: 'skipped' });
       continue;
     }
     if (isLowValueCrawlUrl(current.url)) {
       seen.add(current.url);
-      skippedUrls.push({ source_id: args.source.id, url: current.url, reason: 'excluded_low_value_path' });
+      skippedUrls.push({
+        source_id: args.source.id,
+        url: current.url,
+        reason: 'excluded_low_value_path',
+        depth: current.depth,
+        discovered_from_url: current.discoveredFromUrl,
+        priority_score: highValueCrawlScore(current.url),
+        status: 'skipped',
+      });
+      if (current.frontierRowId) frontierUpdates.push({ id: current.frontierRowId, status: 'skipped' });
       continue;
     }
     seen.add(current.url);
@@ -1419,12 +1792,29 @@ async function collectCrawlSource(args: {
         depth: current.depth,
       });
       results.push(result);
+      if (current.frontierRowId) {
+        frontierUpdates.push({
+          id: current.frontierRowId,
+          status:
+            result.outcome === 'stored'
+              ? 'fetched'
+              : result.outcome === 'unchanged'
+                ? 'unchanged'
+                : result.outcome === 'failed'
+                  ? 'failed'
+                  : 'skipped',
+        });
+      }
 
       if (result.outcome === 'skipped') {
         skippedUrls.push({
           source_id: args.source.id,
           url: result.url,
-          reason: result.reason ?? 'skipped',
+          reason: (result.reason ?? 'unsupported_content_type') as MarketCrawlUrlReason,
+          depth: current.depth,
+          discovered_from_url: current.discoveredFromUrl,
+          priority_score: highValueCrawlScore(result.url),
+          status: 'skipped',
         });
       }
 
@@ -1432,15 +1822,47 @@ async function collectCrawlSource(args: {
 
       for (const link of prioritizeCrawlLinks(extractLinks(raw, current.url))) {
         if (new URL(link).origin !== origin) {
-          skippedUrls.push({ source_id: args.source.id, url: link, reason: 'out_of_scope' });
+          skippedUrls.push({
+            source_id: args.source.id,
+            url: link,
+            reason: 'out_of_scope',
+            depth: current.depth + 1,
+            discovered_from_url: current.url,
+            priority_score: highValueCrawlScore(link),
+            status: 'skipped',
+          });
         } else if (isLowValueCrawlUrl(link)) {
-          skippedUrls.push({ source_id: args.source.id, url: link, reason: 'excluded_low_value_path' });
+          skippedUrls.push({
+            source_id: args.source.id,
+            url: link,
+            reason: 'excluded_low_value_path',
+            depth: current.depth + 1,
+            discovered_from_url: current.url,
+            priority_score: highValueCrawlScore(link),
+            status: 'skipped',
+          });
         } else if (seen.has(link) || queue.some((item) => item.url === link)) {
-          skippedUrls.push({ source_id: args.source.id, url: link, reason: 'duplicate' });
+          skippedUrls.push({
+            source_id: args.source.id,
+            url: link,
+            reason: 'duplicate',
+            depth: current.depth + 1,
+            discovered_from_url: current.url,
+            priority_score: highValueCrawlScore(link),
+            status: 'skipped',
+          });
         } else if (current.depth + 1 > args.maxDepth) {
-          skippedUrls.push({ source_id: args.source.id, url: link, reason: 'max_depth' });
+          skippedUrls.push({
+            source_id: args.source.id,
+            url: link,
+            reason: 'max_depth',
+            depth: current.depth + 1,
+            discovered_from_url: current.url,
+            priority_score: highValueCrawlScore(link),
+            status: 'open',
+          });
         } else {
-          queue.push({ url: link, depth: current.depth + 1 });
+          queue.push({ url: link, depth: current.depth + 1, discoveredFromUrl: current.url });
         }
       }
     } catch (e) {
@@ -1462,10 +1884,11 @@ async function collectCrawlSource(args: {
         }),
       });
       results.push({ outcome: 'failed', document, url: current.url });
+      if (current.frontierRowId) frontierUpdates.push({ id: current.frontierRowId, status: 'failed' });
     }
   }
 
-  return { results, skippedUrls, visited };
+  return { results, skippedUrls, frontierUpdates, visited };
 }
 
 register({
@@ -1476,6 +1899,12 @@ register({
   parseArgs: (raw) => ({
     market_id: str(raw.market_id ?? raw['market-id'], 'market_id'),
     failed_only: bool(raw.failed_only ?? raw['failed-only']),
+    continue_frontier: bool(raw.continue_frontier ?? raw['continue-frontier']),
+    refresh_stale: bool(raw.refresh_stale ?? raw['refresh-stale']),
+    refresh_all: bool(raw.refresh_all ?? raw['refresh-all']),
+    stale_days: positiveInt(raw.stale_days ?? raw['stale-days'], 60, 'stale_days'),
+    include_skipped: bool(raw.include_skipped ?? raw['include-skipped']),
+    skipped_limit: positiveInt(raw.skipped_limit ?? raw['skipped-limit'], DEFAULT_CRAWL_ROW_LIMIT, 'skipped_limit'),
     max_pages: positiveInt(raw.max_pages ?? raw['max-pages'], 10, 'max_pages'),
     max_depth: positiveInt(raw.max_depth ?? raw['max-depth'], 1, 'max_depth'),
   }),
@@ -1500,12 +1929,41 @@ register({
       document_id: string;
     }> = [];
     const unsupported: Array<{ source_id: string; source_type: MarketSourceType; url: string; reason: string }> = [];
-    const skipped_urls: Array<{ source_id: string; url: string; reason: string }> = [];
+    const skipped_sources: Array<{
+      source_id: string;
+      url: string;
+      reason: 'fresh';
+      latest_successful_fetch_at: string;
+    }> = [];
+    const skipped_urls: CrawlSkippedUrl[] = [];
     const documents: MarketDocument[] = [];
+    const frontierUpdates: Array<{ id: string; status: MarketCrawlUrlStatus }> = [];
+    const frontierCreatedIds = new Set<string>();
     let visited = 0;
-    const sources = args.failed_only
-      ? listMarketSourcesWithLatestFailedDocument(args.market_id)
-      : listMarketSources(args.market_id).filter((item) => item.status === 'active');
+    let frontierUrlsLoaded = 0;
+    const openFrontier = args.continue_frontier ? listOpenMarketCrawlUrls(args.market_id) : [];
+    const allSources = listMarketSources(args.market_id);
+    const existingDocuments = args.refresh_stale ? listMarketDocuments(args.market_id) : [];
+    const staleCutoffMs = Date.now() - args.stale_days * 24 * 60 * 60 * 1000;
+    const sources = args.continue_frontier
+      ? allSources.filter((item) => item.status === 'active' && openFrontier.some((row) => row.source_id === item.id))
+      : args.failed_only
+        ? listMarketSourcesWithLatestFailedDocument(args.market_id)
+        : args.refresh_stale
+          ? allSources.filter((item) => {
+              if (item.status !== 'active') return false;
+              const latestSuccessful = latestSuccessfulDocumentForSource(existingDocuments, item.id);
+              if (!latestSuccessful) return true;
+              if (new Date(latestSuccessful.fetched_at).getTime() < staleCutoffMs) return true;
+              skipped_sources.push({
+                source_id: item.id,
+                url: item.url,
+                reason: 'fresh',
+                latest_successful_fetch_at: latestSuccessful.fetched_at,
+              });
+              return false;
+            })
+          : allSources.filter((item) => item.status === 'active');
 
     for (const source of sources) {
       if (!['exact_url', 'website', 'docs'].includes(source.source_type)) {
@@ -1547,14 +2005,27 @@ register({
           });
         }
       } else {
+        const sourceFrontierRows = args.continue_frontier
+          ? openFrontier.filter((row) => row.source_id === source.id && ['max_pages', 'max_depth'].includes(row.reason))
+          : [];
+        frontierUrlsLoaded += sourceFrontierRows.length;
         const crawl = await collectCrawlSource({
           source,
           run,
           maxPages: args.max_pages,
           maxDepth: args.max_depth,
+          startUrls: args.continue_frontier
+            ? sourceFrontierRows.map((row) => ({
+                url: row.normalized_url,
+                depth: row.depth ?? 0,
+                discoveredFromUrl: row.discovered_from_url,
+                frontierRowId: row.id,
+              }))
+            : undefined,
         });
         visited += crawl.visited;
         skipped_urls.push(...crawl.skippedUrls);
+        frontierUpdates.push(...crawl.frontierUpdates);
         for (const result of crawl.results) {
           if (result.outcome === 'failed' && result.document) {
             documents.push(result.document);
@@ -1585,6 +2056,25 @@ register({
       }
     }
 
+    for (const skipped of skipped_urls) {
+      const row = createMarketCrawlUrl({
+        market_id: args.market_id,
+        source_id: skipped.source_id,
+        run_id: run.id,
+        url: skipped.url,
+        normalized_url: normalizeCrawlUrl(skipped.url, skipped.url) ?? skipped.url,
+        reason: skipped.reason,
+        depth: skipped.depth,
+        discovered_from_url: skipped.discovered_from_url,
+        priority_score: skipped.priority_score,
+        status: skipped.status,
+      });
+      if (row.status === 'open' && row.run_id === run.id) frontierCreatedIds.add(row.id);
+    }
+    for (const update of frontierUpdates) {
+      updateMarketCrawlUrlStatus(update.id, update.status);
+    }
+
     const summary = {
       visited,
       stored_documents: stored_documents.length,
@@ -1594,13 +2084,20 @@ register({
         document_id: document.document_id,
       })),
       skipped: skipped_urls.length,
+      skipped_sources: skipped_sources.length,
       failed: failed.length,
       unsupported: unsupported.length,
+      frontier_created: frontierCreatedIds.size,
+      frontier_urls_loaded: args.continue_frontier ? frontierUrlsLoaded : 0,
+      frontier_urls_attempted: frontierUpdates.filter((update) => update.status !== 'superseded').length,
+      frontier_urls_updated: frontierUpdates.length,
+      refresh_mode: args.refresh_all ? 'all' : args.refresh_stale ? 'stale' : null,
     };
     const completed = completeMarketRun(run.id, {
       status: 'completed',
       summary: JSON.stringify(summary),
     });
+    const returnedSkippedUrls = args.include_skipped ? limitedRows(skipped_urls, args.skipped_limit) : [];
 
     return {
       run: completed,
@@ -1608,7 +2105,11 @@ register({
       unchanged_documents,
       failed,
       unsupported,
-      skipped_urls,
+      skipped_sources,
+      skipped_urls: returnedSkippedUrls,
+      skipped_urls_returned: returnedSkippedUrls.length,
+      skipped_urls_limit: args.skipped_limit,
+      skipped_urls_omitted: Math.max(0, skipped_urls.length - returnedSkippedUrls.length),
       summary,
       documents,
       next_actions: [`ncl market-documents list --market-id ${args.market_id}`, `ncl markets get ${args.market_id}`],

@@ -19,6 +19,17 @@ export type MarketCandidateType = 'company' | 'product' | 'problem' | 'capabilit
 export type MarketCandidateConfidence = 'low' | 'medium' | 'high';
 export type MarketCandidateStatus = 'proposed' | 'accepted' | 'rejected';
 export type MarketSourceProposalStatus = 'proposed' | 'accepted' | 'rejected';
+export type MarketCrawlUrlReason =
+  | 'max_pages'
+  | 'max_depth'
+  | 'duplicate'
+  | 'out_of_scope'
+  | 'excluded_low_value_path'
+  | 'low_quality_content'
+  | 'unsupported_content_type'
+  | 'fetch_failed'
+  | 'invalid_url';
+export type MarketCrawlUrlStatus = 'open' | 'fetched' | 'unchanged' | 'failed' | 'skipped' | 'superseded' | 'ignored';
 
 export interface Market {
   id: string;
@@ -76,6 +87,22 @@ export interface MarketDocument {
   fetched_at: string;
   created_at: string;
   metadata_json: string | null;
+}
+
+export interface MarketCrawlUrl {
+  id: string;
+  market_id: string;
+  source_id: string;
+  run_id: string;
+  url: string;
+  normalized_url: string;
+  reason: MarketCrawlUrlReason;
+  depth: number | null;
+  discovered_from_url: string | null;
+  priority_score: number;
+  status: MarketCrawlUrlStatus;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface MarketCandidateEvidence {
@@ -488,10 +515,146 @@ export function listMarketRuns(marketId: string): MarketRun[] {
     .all(marketId) as MarketRun[];
 }
 
+export function getMarketRun(id: string): MarketRun | undefined {
+  return getDb().prepare('SELECT * FROM market_runs WHERE id = ?').get(id) as MarketRun | undefined;
+}
+
 export function getLatestMarketRun(marketId: string): MarketRun | undefined {
   return getDb()
     .prepare('SELECT * FROM market_runs WHERE market_id = ? ORDER BY started_at DESC, id DESC LIMIT 1')
     .get(marketId) as MarketRun | undefined;
+}
+
+export function createMarketCrawlUrl(input: {
+  market_id: string;
+  source_id: string;
+  run_id: string;
+  url: string;
+  normalized_url: string;
+  reason: MarketCrawlUrlReason;
+  depth?: number | null;
+  discovered_from_url?: string | null;
+  priority_score?: number;
+  status: MarketCrawlUrlStatus;
+}): MarketCrawlUrl {
+  const at = now();
+  const priorityScore = input.priority_score ?? 0;
+
+  if (input.status === 'open') {
+    const existing = getDb()
+      .prepare(
+        `SELECT *
+         FROM market_crawl_urls
+         WHERE market_id = ?
+           AND source_id = ?
+           AND normalized_url = ?
+           AND status = 'open'
+         ORDER BY priority_score DESC, created_at ASC, id ASC
+         LIMIT 1`,
+      )
+      .get(input.market_id, input.source_id, input.normalized_url) as MarketCrawlUrl | undefined;
+
+    if (existing) {
+      getDb()
+        .prepare(
+          `UPDATE market_crawl_urls
+           SET depth = CASE
+                 WHEN depth IS NULL THEN @depth
+                 WHEN @depth IS NULL THEN depth
+                 WHEN @depth < depth THEN @depth
+                 ELSE depth
+               END,
+               priority_score = CASE
+                 WHEN @priority_score > priority_score THEN @priority_score
+                 ELSE priority_score
+               END,
+               updated_at = @updated_at
+           WHERE id = @id`,
+        )
+        .run({
+          id: existing.id,
+          depth: input.depth ?? null,
+          priority_score: priorityScore,
+          updated_at: at,
+        });
+
+      return getDb().prepare('SELECT * FROM market_crawl_urls WHERE id = ?').get(existing.id) as MarketCrawlUrl;
+    }
+  }
+
+  const row: MarketCrawlUrl = {
+    id: id('mcurl'),
+    market_id: input.market_id,
+    source_id: input.source_id,
+    run_id: input.run_id,
+    url: input.url,
+    normalized_url: input.normalized_url,
+    reason: input.reason,
+    depth: input.depth ?? null,
+    discovered_from_url: input.discovered_from_url ?? null,
+    priority_score: priorityScore,
+    status: input.status,
+    created_at: at,
+    updated_at: at,
+  };
+
+  getDb()
+    .prepare(
+      `INSERT INTO market_crawl_urls
+         (id, market_id, source_id, run_id, url, normalized_url, reason, depth, discovered_from_url, priority_score, status, created_at, updated_at)
+       VALUES
+         (@id, @market_id, @source_id, @run_id, @url, @normalized_url, @reason, @depth, @discovered_from_url, @priority_score, @status, @created_at, @updated_at)`,
+    )
+    .run(row);
+
+  return row;
+}
+
+export function listMarketCrawlUrlsForRun(runId: string): MarketCrawlUrl[] {
+  return getDb()
+    .prepare(
+      `SELECT *
+       FROM market_crawl_urls
+       WHERE run_id = ?
+       ORDER BY priority_score DESC, created_at, id`,
+    )
+    .all(runId) as MarketCrawlUrl[];
+}
+
+export function listMarketCrawlUrls(marketId: string): MarketCrawlUrl[] {
+  return getDb()
+    .prepare(
+      `SELECT *
+       FROM market_crawl_urls
+       WHERE market_id = ?
+       ORDER BY created_at DESC, id DESC`,
+    )
+    .all(marketId) as MarketCrawlUrl[];
+}
+
+export function listOpenMarketCrawlUrls(marketId: string): MarketCrawlUrl[] {
+  return getDb()
+    .prepare(
+      `SELECT *
+       FROM market_crawl_urls
+       WHERE market_id = ?
+         AND status = 'open'
+       ORDER BY priority_score DESC, created_at, id`,
+    )
+    .all(marketId) as MarketCrawlUrl[];
+}
+
+export function updateMarketCrawlUrlStatus(id: string, status: MarketCrawlUrlStatus): MarketCrawlUrl | undefined {
+  const updated_at = now();
+  getDb()
+    .prepare(
+      `UPDATE market_crawl_urls
+       SET status = ?, updated_at = ?
+       WHERE id = ?`,
+    )
+    .run(status, updated_at, id);
+
+  return getDb().prepare('SELECT * FROM market_crawl_urls WHERE id = ?').get(id) as MarketCrawlUrl | undefined;
 }
 
 export function createMarketSearchRun(input: {

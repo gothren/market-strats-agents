@@ -164,6 +164,7 @@ A collection run should record:
 - failed count
 - unsupported count
 - skipped count and skip reasons when implemented
+- persisted crawl frontier/skipped URL rows for audit and later continuation work
 - run status and summary
 
 Current v1 support:
@@ -173,7 +174,13 @@ Current v1 support:
 - page-level evidence storage for crawled pages.
 - crawl bounds via `--max-pages` and `--max-depth`.
 - skipped URL reporting for duplicate, out-of-scope, unsupported content type, max-pages, max-depth, invalid URL, excluded low-value path, and low-quality content cases.
+- persisted `market_crawl_urls` rows for skipped/frontier crawl URLs with reason, depth, discovered-from URL, priority score, and status.
+- compact collection/run/context outputs by default, with bounded drill-down via `--include-frontier --frontier-limit <N>` and `--include-skipped --skipped-limit <N>`.
+- `market-runs get <RUN_ID>` for run inspection, parsed summary, failed URLs, skip counts, and optional bounded skipped/frontier rows.
+- `market-sources crawl-context --market-id <MARKET_ID>` for agent-readable crawl freshness/completeness context without choosing the crawl plan.
+- crawl-context `diagnostics` are computed on read from stored run/document/crawl URL facts, include evidence, and avoid severity, scores, suggested actions, or recommendations.
 - crawl URL normalization removes fragments and non-root trailing slashes before queueing/storing to avoid duplicate page variants.
+- open crawl frontier rows are deduplicated by `market_id`, `source_id`, and normalized URL, with a partial unique index for `status = 'open'`; historical skipped/fetched/failed/superseded rows remain available for audit.
 - default low-value path filtering for pages such as careers, jobs, privacy, terms, legal, cookies, contact/contact-us, login/signin/signup/sign-up/register, demo/book-a-demo/request-demo, sales/talk-to-sales, get-started, events, webinars, press, and newsroom.
 - default high-value path prioritization for pages such as docs, security, product, platform, solutions, customers, case studies, blog, changelog, integrations, pricing, developers, and API.
 - minimum extracted text filtering for crawled HTML pages; pages under 300 characters are skipped as `low_quality_content`.
@@ -182,6 +189,8 @@ Current v1 support:
 - unsupported responses for valid source types that are not implemented yet.
 
 Known v1 tradeoff: `--failed-only` still relies on document rows. If a failed source later fetches unchanged content matching an older fetched document, no new fetched row is created. Revisit this only if it becomes real workflow pain.
+
+Known v1 crawl-context tradeoff: frontier/skipped rows are persisted and `--continue-frontier` can continue open `max_pages`/`max_depth` URLs. `--refresh-stale` can recollect stale sources and `--refresh-all` can recollect all active sources, but source-specific continuation/refresh filters such as `--source-id` are not implemented yet. Agents should use crawl context to decide whether to collect normally, continue frontier, refresh stale evidence, inspect documents, or propose better source URLs.
 
 Near-term source expansion:
 

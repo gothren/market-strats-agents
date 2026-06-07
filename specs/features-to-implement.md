@@ -91,15 +91,17 @@ Acceptance:
 
 Goal:
 
-- Make website/docs collection more complete, configurable, and robust once the simple bounded crawler becomes limiting.
+- Make website/docs collection more complete and configurable once the current bounded crawler plus crawl-context tooling becomes limiting.
 
 Context:
 
-- Current crawler support is intentionally conservative: same-origin, HTML-only, default `--max-pages 10`, default `--max-depth 1`, simple link extraction, and no browser rendering.
+- Current crawler support is intentionally conservative: same-origin, HTML-only, default `--max-pages 10`, default `--max-depth 1`, simple link extraction, persisted skipped/frontier rows, and no browser rendering.
+- Implemented already: low-value path filtering, high-value prioritization, minimum text filtering, crawl URL normalization, persisted frontier/skipped rows, compact bounded crawl output, open frontier dedupe, `market-runs get`, `market-sources crawl-context`, `market-sources collect --continue-frontier`, `--refresh-stale`, and `--refresh-all`.
 - This is enough for early evidence collection but will miss common source shapes such as sitemaps, PDFs, JS-rendered docs, and cross-subdomain docs links.
 
 Implementation notes:
 
+- Add source-specific collection filters, such as `--source-id`, for continuation and refresh flows.
 - Add include/exclude URL patterns for source-specific crawl control.
 - Add allowed-domain or allowed-origin expansion so a website source can intentionally include docs/blog subdomains.
 - Add robots.txt and sitemap support where useful.

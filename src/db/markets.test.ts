@@ -17,7 +17,7 @@ describe('market core schema', () => {
       .prepare(
         `SELECT name FROM sqlite_master
          WHERE type = 'table'
-           AND name IN ('markets', 'market_boundaries', 'market_sources', 'market_source_proposals', 'market_runs', 'market_search_runs', 'market_documents', 'market_candidates')
+           AND name IN ('markets', 'market_boundaries', 'market_sources', 'market_source_proposals', 'market_runs', 'market_search_runs', 'market_crawl_urls', 'market_documents', 'market_candidates')
          ORDER BY name`,
       )
       .all() as Array<{ name: string }>;
@@ -25,6 +25,7 @@ describe('market core schema', () => {
     expect(rows.map((row) => row.name)).toEqual([
       'market_boundaries',
       'market_candidates',
+      'market_crawl_urls',
       'market_documents',
       'market_runs',
       'market_search_runs',
@@ -88,14 +89,148 @@ describe('market core schema', () => {
       notes: 'Useful search.',
     });
 
+    marketDb.createMarketCrawlUrl({
+      market_id: market.id,
+      source_id: source.id,
+      run_id: run.id,
+      url: 'https://example.com/vendor/platform',
+      normalized_url: 'https://example.com/vendor/platform',
+      reason: 'max_pages',
+      depth: 1,
+      discovered_from_url: source.url,
+      priority_score: 12,
+      status: 'open',
+    });
+
     getDb().prepare('DELETE FROM markets WHERE id = ?').run(market.id);
 
     expect(getDb().prepare('SELECT COUNT(*) AS c FROM market_boundaries').get()).toMatchObject({ c: 0 });
     expect(getDb().prepare('SELECT COUNT(*) AS c FROM market_candidates').get()).toMatchObject({ c: 0 });
     expect(getDb().prepare('SELECT COUNT(*) AS c FROM market_documents').get()).toMatchObject({ c: 0 });
+    expect(getDb().prepare('SELECT COUNT(*) AS c FROM market_crawl_urls').get()).toMatchObject({ c: 0 });
     expect(getDb().prepare('SELECT COUNT(*) AS c FROM market_sources').get()).toMatchObject({ c: 0 });
     expect(getDb().prepare('SELECT COUNT(*) AS c FROM market_runs').get()).toMatchObject({ c: 0 });
     expect(getDb().prepare('SELECT COUNT(*) AS c FROM market_search_runs').get()).toMatchObject({ c: 0 });
+  });
+});
+
+describe('market crawl URL db helpers', () => {
+  it('stores crawl URL audit rows and lists them by run or open source frontier', async () => {
+    const marketDb = await import('./markets.js');
+    const market = marketDb.createMarket({ name: 'AI Security', description: null });
+    const source = marketDb.addMarketSource({
+      market_id: market.id,
+      url: 'https://vendor.example.com',
+      source_type: 'website',
+      trust_tier: 'official',
+      notes: null,
+    });
+    const run = marketDb.createMarketRun({
+      market_id: market.id,
+      source_id: null,
+      kind: 'collection',
+      status: 'completed',
+      summary: null,
+    });
+
+    const open = marketDb.createMarketCrawlUrl({
+      market_id: market.id,
+      source_id: source.id,
+      run_id: run.id,
+      url: 'https://vendor.example.com/platform',
+      normalized_url: 'https://vendor.example.com/platform',
+      reason: 'max_pages',
+      depth: 1,
+      discovered_from_url: 'https://vendor.example.com/',
+      priority_score: 12,
+      status: 'open',
+    });
+    marketDb.createMarketCrawlUrl({
+      market_id: market.id,
+      source_id: source.id,
+      run_id: run.id,
+      url: 'https://vendor.example.com/privacy',
+      normalized_url: 'https://vendor.example.com/privacy',
+      reason: 'excluded_low_value_path',
+      depth: 1,
+      discovered_from_url: 'https://vendor.example.com/',
+      priority_score: 0,
+      status: 'skipped',
+    });
+
+    expect(open.id).toMatch(/^mcurl_/);
+    expect(marketDb.listMarketCrawlUrlsForRun(run.id).map((row) => row.reason)).toEqual([
+      'max_pages',
+      'excluded_low_value_path',
+    ]);
+    expect(marketDb.listOpenMarketCrawlUrls(market.id).map((row) => row.url)).toEqual([
+      'https://vendor.example.com/platform',
+    ]);
+  });
+
+  it('deduplicates open crawl frontier rows by market, source, and normalized URL', async () => {
+    const marketDb = await import('./markets.js');
+    const market = marketDb.createMarket({ name: 'AI Security', description: null });
+    const source = marketDb.addMarketSource({
+      market_id: market.id,
+      url: 'https://vendor.example.com',
+      source_type: 'website',
+      trust_tier: 'official',
+      notes: null,
+    });
+    const run = marketDb.createMarketRun({
+      market_id: market.id,
+      source_id: null,
+      kind: 'collection',
+      status: 'completed',
+      summary: null,
+    });
+
+    const first = marketDb.createMarketCrawlUrl({
+      market_id: market.id,
+      source_id: source.id,
+      run_id: run.id,
+      url: 'https://vendor.example.com/platform',
+      normalized_url: 'https://vendor.example.com/platform',
+      reason: 'max_pages',
+      depth: 2,
+      discovered_from_url: 'https://vendor.example.com/',
+      priority_score: 3,
+      status: 'open',
+    });
+    const second = marketDb.createMarketCrawlUrl({
+      market_id: market.id,
+      source_id: source.id,
+      run_id: run.id,
+      url: 'https://vendor.example.com/platform',
+      normalized_url: 'https://vendor.example.com/platform',
+      reason: 'max_pages',
+      depth: 1,
+      discovered_from_url: 'https://vendor.example.com/security',
+      priority_score: 12,
+      status: 'open',
+    });
+
+    expect(second.id).toBe(first.id);
+    expect(marketDb.listOpenMarketCrawlUrls(market.id)).toEqual([
+      expect.objectContaining({
+        id: first.id,
+        normalized_url: 'https://vendor.example.com/platform',
+        depth: 1,
+        priority_score: 12,
+      }),
+    ]);
+    expect(
+      getDb()
+        .prepare(
+          `SELECT market_id, source_id, normalized_url, COUNT(*) AS c
+           FROM market_crawl_urls
+           WHERE status = 'open'
+           GROUP BY market_id, source_id, normalized_url
+           HAVING c > 1`,
+        )
+        .all(),
+    ).toEqual([]);
   });
 });
 

@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { initTestDb, closeDb, runMigrations } from '../../db/index.js';
+import { initTestDb, closeDb, getDb, runMigrations } from '../../db/index.js';
 import { dispatch } from '../dispatch.js';
 
 beforeEach(() => {
@@ -1313,7 +1313,7 @@ describe('market sources CLI resource', () => {
       {
         id: 'req-sources-collect-website',
         command: 'market-sources-collect',
-        args: { market_id: marketId, 'max-pages': 3, 'max-depth': 1 },
+        args: { market_id: marketId, 'max-pages': 3, 'max-depth': 1, 'include-skipped': true },
       },
       { caller: 'host' },
     );
@@ -1350,6 +1350,317 @@ describe('market sources CLI resource', () => {
       );
     }
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('persists crawl frontier rows and exposes them through market run inspection', async () => {
+    await registerMarketsResource();
+
+    const created = await dispatch(
+      {
+        id: 'req-create-market',
+        command: 'markets-create',
+        args: { name: 'AI Security', description: null },
+      },
+      { caller: 'host' },
+    );
+    expect(created.ok).toBe(true);
+    const marketId = (created as { ok: true; data: { market: { id: string } } }).data.market.id;
+
+    await dispatch(
+      {
+        id: 'req-source-add',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: 'https://vendor.example.com',
+          source_type: 'website',
+          trust_tier: 'official',
+        },
+      },
+      { caller: 'host' },
+    );
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url === 'https://vendor.example.com/') {
+          return new Response(
+            `<html><head><title>Vendor</title></head><body>${longText(
+              'Vendor page describes AI security product capabilities, platform architecture, integrations, governance, runtime controls, evidence collection, deployment models, and operational outcomes.',
+            )} <a href="/security">Security</a><a href="/about">About</a><a href="/privacy">Privacy</a><a href="https://other.example.com/offsite">Offsite</a></body></html>`,
+            { status: 200, headers: { 'content-type': 'text/html' } },
+          );
+        }
+        if (url === 'https://vendor.example.com/security') {
+          return new Response(
+            `<html><head><title>Security</title></head><body>${longText(
+              'Security page describes prompt injection defenses, data leakage controls, model monitoring, access controls, audit trails, integrations, incident response, and governance features.',
+            )}</body></html>`,
+            { status: 200, headers: { 'content-type': 'text/html' } },
+          );
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }),
+    );
+
+    const collected = await dispatch(
+      {
+        id: 'req-sources-collect-frontier',
+        command: 'market-sources-collect',
+        args: { market_id: marketId, 'max-pages': 2, 'max-depth': 1 },
+      },
+      { caller: 'host' },
+    );
+
+    expect(collected.ok).toBe(true);
+    const runId = (collected as { ok: true; data: { run: { id: string } } }).data.run.id;
+
+    const inspected = await dispatch(
+      {
+        id: 'req-runs-get',
+        command: 'market-runs-get',
+        args: { id: runId, 'include-frontier': true, 'include-skipped': true },
+      },
+      { caller: 'host' },
+    );
+
+    expect(inspected.ok).toBe(true);
+    if (inspected.ok) {
+      const data = inspected.data as {
+        run: { id: string };
+        summary: { skipped: number };
+        skipped_counts_by_reason: Record<string, number>;
+        frontier_count: number;
+        frontier_returned: number;
+        frontier_limit: number;
+        skipped_count: number;
+        skipped_returned: number;
+        skipped_limit: number;
+        frontier: Array<{ url: string; reason: string; status: string; depth: number; priority_score: number }>;
+        skipped_urls: Array<{ url: string; reason: string; status: string }>;
+        available_commands: string[];
+      };
+      expect(data.run.id).toBe(runId);
+      expect(data.summary.skipped).toBe(3);
+      expect(data.skipped_counts_by_reason).toMatchObject({
+        max_pages: 1,
+        excluded_low_value_path: 1,
+        out_of_scope: 1,
+      });
+      expect(data).toMatchObject({
+        frontier_count: 1,
+        frontier_returned: 1,
+        frontier_limit: 25,
+        skipped_count: 2,
+        skipped_returned: 2,
+        skipped_limit: 25,
+      });
+      expect(data.frontier).toEqual([
+        expect.objectContaining({
+          url: 'https://vendor.example.com/about',
+          reason: 'max_pages',
+          status: 'open',
+          depth: 1,
+          priority_score: 0,
+        }),
+      ]);
+      expect(data.skipped_urls).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            url: 'https://vendor.example.com/privacy',
+            reason: 'excluded_low_value_path',
+            status: 'skipped',
+          }),
+          expect.objectContaining({
+            url: 'https://other.example.com/offsite',
+            reason: 'out_of_scope',
+            status: 'skipped',
+          }),
+        ]),
+      );
+      expect(data.available_commands).toEqual(
+        expect.arrayContaining([expect.stringContaining('market-sources crawl-context')]),
+      );
+    }
+  });
+
+  it('limits frontier and skipped rows in market run inspection', async () => {
+    await registerMarketsResource();
+
+    const created = await dispatch(
+      {
+        id: 'req-create-market',
+        command: 'markets-create',
+        args: { name: 'AI Security', description: null },
+      },
+      { caller: 'host' },
+    );
+    expect(created.ok).toBe(true);
+    const marketId = (created as { ok: true; data: { market: { id: string } } }).data.market.id;
+
+    await dispatch(
+      {
+        id: 'req-source-add',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: 'https://limits.example.com',
+          source_type: 'website',
+          trust_tier: 'official',
+        },
+      },
+      { caller: 'host' },
+    );
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url === 'https://limits.example.com/') {
+          return new Response(
+            `<html><head><title>Limits</title></head><body>${longText(
+              'Limits vendor page describes AI security product capabilities, platform architecture, integrations, governance, runtime controls, evidence collection, deployment models, and operational outcomes.',
+            )} <a href="/one">One</a><a href="/two">Two</a><a href="/three">Three</a><a href="/privacy">Privacy</a><a href="/careers">Careers</a><a href="https://other.example.com/offsite">Offsite</a></body></html>`,
+            { status: 200, headers: { 'content-type': 'text/html' } },
+          );
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }),
+    );
+
+    const collected = await dispatch(
+      {
+        id: 'req-sources-collect-limit-frontier',
+        command: 'market-sources-collect',
+        args: { market_id: marketId, 'max-pages': 1, 'max-depth': 1 },
+      },
+      { caller: 'host' },
+    );
+
+    expect(collected.ok).toBe(true);
+    const runId = (collected as { ok: true; data: { run: { id: string } } }).data.run.id;
+
+    const inspected = await dispatch(
+      {
+        id: 'req-runs-get-limited',
+        command: 'market-runs-get',
+        args: { id: runId, 'include-frontier': true, 'frontier-limit': 2, 'include-skipped': true, 'skipped-limit': 1 },
+      },
+      { caller: 'host' },
+    );
+
+    expect(inspected.ok).toBe(true);
+    if (inspected.ok) {
+      const data = inspected.data as {
+        frontier_count: number;
+        frontier_returned: number;
+        frontier_limit: number;
+        frontier: unknown[];
+        skipped_count: number;
+        skipped_returned: number;
+        skipped_limit: number;
+        skipped_urls: unknown[];
+      };
+      expect(data.frontier_count).toBe(3);
+      expect(data.frontier_returned).toBe(2);
+      expect(data.frontier_limit).toBe(2);
+      expect(data.frontier).toHaveLength(2);
+      expect(data.skipped_count).toBe(3);
+      expect(data.skipped_returned).toBe(1);
+      expect(data.skipped_limit).toBe(1);
+      expect(data.skipped_urls).toHaveLength(1);
+    }
+  });
+
+  it('keeps collection skipped URL output compact unless examples are requested', async () => {
+    await registerMarketsResource();
+
+    const created = await dispatch(
+      {
+        id: 'req-create-market',
+        command: 'markets-create',
+        args: { name: 'AI Security', description: null },
+      },
+      { caller: 'host' },
+    );
+    expect(created.ok).toBe(true);
+    const marketId = (created as { ok: true; data: { market: { id: string } } }).data.market.id;
+
+    await dispatch(
+      {
+        id: 'req-source-add',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: 'https://compact.example.com',
+          source_type: 'website',
+          trust_tier: 'official',
+        },
+      },
+      { caller: 'host' },
+    );
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url === 'https://compact.example.com/') {
+          return new Response(
+            `<html><head><title>Compact</title></head><body>${longText(
+              'Compact vendor page describes AI security product capabilities, platform architecture, integrations, governance, runtime controls, evidence collection, deployment models, and operational outcomes.',
+            )} <a href="/one">One</a><a href="/two">Two</a><a href="/privacy">Privacy</a><a href="https://other.example.com/offsite">Offsite</a></body></html>`,
+            { status: 200, headers: { 'content-type': 'text/html' } },
+          );
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }),
+    );
+
+    const compact = await dispatch(
+      {
+        id: 'req-sources-collect-compact',
+        command: 'market-sources-collect',
+        args: { market_id: marketId, 'max-pages': 1, 'max-depth': 1 },
+      },
+      { caller: 'host' },
+    );
+
+    expect(compact.ok).toBe(true);
+    if (compact.ok) {
+      expect(compact.data).toMatchObject({
+        summary: {
+          skipped: 4,
+          frontier_created: 2,
+        },
+        skipped_urls: [],
+        skipped_urls_returned: 0,
+        skipped_urls_limit: 25,
+        skipped_urls_omitted: 4,
+      });
+    }
+
+    const withExamples = await dispatch(
+      {
+        id: 'req-sources-collect-compact-examples',
+        command: 'market-sources-collect',
+        args: { market_id: marketId, 'max-pages': 1, 'max-depth': 1, 'include-skipped': true, 'skipped-limit': 1 },
+      },
+      { caller: 'host' },
+    );
+
+    expect(withExamples.ok).toBe(true);
+    if (withExamples.ok) {
+      const data = withExamples.data as {
+        summary: { skipped: number };
+        skipped_urls: unknown[];
+        skipped_urls_returned: number;
+        skipped_urls_limit: number;
+        skipped_urls_omitted: number;
+      };
+      expect(data.summary.skipped).toBeGreaterThan(0);
+      expect(data.skipped_urls).toHaveLength(1);
+      expect(data.skipped_urls_returned).toBe(1);
+      expect(data.skipped_urls_limit).toBe(1);
+      expect(data.skipped_urls_omitted).toBe(data.summary.skipped - 1);
+    }
   });
 
   it('skips low-value website paths before fetching or storing them', async () => {
@@ -1405,7 +1716,7 @@ describe('market sources CLI resource', () => {
       {
         id: 'req-sources-collect-low-value-paths',
         command: 'market-sources-collect',
-        args: { market_id: marketId, 'max-pages': 5, 'max-depth': 1 },
+        args: { market_id: marketId, 'max-pages': 5, 'max-depth': 1, 'include-skipped': true },
       },
       { caller: 'host' },
     );
@@ -1501,7 +1812,7 @@ describe('market sources CLI resource', () => {
       {
         id: 'req-sources-collect-trailing-slash-dedupe',
         command: 'market-sources-collect',
-        args: { market_id: marketId, 'max-pages': 5, 'max-depth': 1 },
+        args: { market_id: marketId, 'max-pages': 5, 'max-depth': 1, 'include-skipped': true },
       },
       { caller: 'host' },
     );
@@ -1585,7 +1896,7 @@ describe('market sources CLI resource', () => {
       {
         id: 'req-sources-collect-prioritized-links',
         command: 'market-sources-collect',
-        args: { market_id: marketId, 'max-pages': 2, 'max-depth': 1 },
+        args: { market_id: marketId, 'max-pages': 2, 'max-depth': 1, 'include-skipped': true },
       },
       { caller: 'host' },
     );
@@ -1653,7 +1964,7 @@ describe('market sources CLI resource', () => {
       {
         id: 'req-sources-collect-low-quality',
         command: 'market-sources-collect',
-        args: { market_id: marketId },
+        args: { market_id: marketId, 'include-skipped': true },
       },
       { caller: 'host' },
     );
@@ -1751,6 +2062,384 @@ describe('market sources CLI resource', () => {
     }
   });
 
+  it('returns crawl context for fresh agents without choosing a crawl plan', async () => {
+    await registerMarketsResource();
+
+    const created = await dispatch(
+      {
+        id: 'req-create-market',
+        command: 'markets-create',
+        args: { name: 'AI Security', description: null },
+      },
+      { caller: 'host' },
+    );
+    expect(created.ok).toBe(true);
+    const marketId = (created as { ok: true; data: { market: { id: string } } }).data.market.id;
+
+    await dispatch(
+      {
+        id: 'req-source-add-frontier',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: 'https://frontier.example.com',
+          source_type: 'website',
+          trust_tier: 'official',
+        },
+      },
+      { caller: 'host' },
+    );
+    await dispatch(
+      {
+        id: 'req-source-add-empty-docs',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: 'https://empty.example.com/docs',
+          source_type: 'docs',
+          trust_tier: 'official',
+        },
+      },
+      { caller: 'host' },
+    );
+    await dispatch(
+      {
+        id: 'req-source-add-failing',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: 'https://failing.example.com',
+          source_type: 'website',
+          trust_tier: 'official',
+        },
+      },
+      { caller: 'host' },
+    );
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url === 'https://frontier.example.com/') {
+          return new Response(
+            `<html><head><title>Frontier</title></head><body>${longText(
+              'Frontier vendor homepage describes AI security product capabilities, platform architecture, integrations, governance, runtime controls, evidence collection, deployment models, and operational outcomes.',
+            )} <a href="/security">Security</a><a href="/about">About</a></body></html>`,
+            { status: 200, headers: { 'content-type': 'text/html' } },
+          );
+        }
+        if (url === 'https://frontier.example.com/security') {
+          return new Response(
+            `<html><head><title>Security</title></head><body>${longText(
+              'Security page describes prompt injection defenses, data leakage controls, model monitoring, access controls, audit trails, integrations, incident response, and governance features.',
+            )}</body></html>`,
+            { status: 200, headers: { 'content-type': 'text/html' } },
+          );
+        }
+        if (url === 'https://empty.example.com/docs') {
+          return new Response('<html><head><title>Empty docs</title></head><body>Short docs.</body></html>', {
+            status: 200,
+            headers: { 'content-type': 'text/html' },
+          });
+        }
+        if (url === 'https://failing.example.com/') {
+          return new Response('Not found', {
+            status: 404,
+            statusText: 'Not Found',
+            headers: { 'content-type': 'text/html' },
+          });
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }),
+    );
+
+    await dispatch(
+      {
+        id: 'req-sources-collect-crawl-context',
+        command: 'market-sources-collect',
+        args: { market_id: marketId, 'max-pages': 2, 'max-depth': 1 },
+      },
+      { caller: 'host' },
+    );
+
+    const context = await dispatch(
+      {
+        id: 'req-crawl-context',
+        command: 'market-sources-crawl-context',
+        args: { market_id: marketId, 'include-frontier': true },
+      },
+      { caller: 'host' },
+    );
+
+    expect(context.ok).toBe(true);
+    if (context.ok) {
+      const data = context.data as {
+        summary: {
+          active_sources: number;
+          sources_with_frontier: number;
+          sources_with_recent_failures: number;
+        };
+        sources: Array<{
+          url: string;
+          document_counts: { fetched: number; failed: number; unchanged: number };
+          frontier_counts?: Record<string, number>;
+          diagnostics: Array<{ diagnostic_type: string }>;
+        }>;
+        frontier_count: number;
+        frontier_returned: number;
+        frontier_limit: number;
+        frontier: Array<{ url: string; reason: string; status: string }>;
+        failures: Array<{ url: string; error: string }>;
+        available_commands: string[];
+      };
+      expect(data.summary).toMatchObject({
+        active_sources: 3,
+        sources_with_frontier: 1,
+        sources_with_recent_failures: 1,
+      });
+      expect(data.sources.find((source) => source.url === 'https://frontier.example.com')).toMatchObject({
+        document_counts: { fetched: 2, failed: 0, unchanged: 0 },
+        frontier_counts: { max_pages: 1 },
+        diagnostics: [expect.objectContaining({ diagnostic_type: 'frontier_available' })],
+      });
+      expect(data.sources.find((source) => source.url === 'https://empty.example.com/docs')).toMatchObject({
+        document_counts: { fetched: 0, failed: 0, unchanged: 0 },
+        diagnostics: [
+          expect.objectContaining({ diagnostic_type: 'zero_documents' }),
+          expect.objectContaining({ diagnostic_type: 'docs_source_zero_yield' }),
+        ],
+      });
+      expect(data.sources.find((source) => source.url === 'https://failing.example.com')).toMatchObject({
+        document_counts: { fetched: 0, failed: 1, unchanged: 0 },
+        diagnostics: expect.arrayContaining([expect.objectContaining({ diagnostic_type: 'all_documents_failed' })]),
+      });
+      expect(data.frontier).toEqual([
+        expect.objectContaining({
+          url: 'https://frontier.example.com/about',
+          reason: 'max_pages',
+          status: 'open',
+        }),
+      ]);
+      expect(data.frontier_count).toBe(1);
+      expect(data.frontier_returned).toBe(1);
+      expect(data.frontier_limit).toBe(25);
+      expect(data.failures).toEqual([
+        expect.objectContaining({ url: 'https://failing.example.com/', error: 'HTTP 404 Not Found' }),
+      ]);
+      expect(data.available_commands).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining('market-sources collect'),
+          expect.stringContaining('market-runs get'),
+        ]),
+      );
+    }
+  });
+
+  it('limits crawl-context frontier rows when requested', async () => {
+    await registerMarketsResource();
+
+    const created = await dispatch(
+      {
+        id: 'req-create-market',
+        command: 'markets-create',
+        args: { name: 'AI Security', description: null },
+      },
+      { caller: 'host' },
+    );
+    expect(created.ok).toBe(true);
+    const marketId = (created as { ok: true; data: { market: { id: string } } }).data.market.id;
+
+    await dispatch(
+      {
+        id: 'req-source-add-context-limit',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: 'https://context-limit.example.com',
+          source_type: 'website',
+          trust_tier: 'official',
+        },
+      },
+      { caller: 'host' },
+    );
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url === 'https://context-limit.example.com/') {
+          return new Response(
+            `<html><head><title>Context Limit</title></head><body>${longText(
+              'Context limit vendor page describes AI security product capabilities, platform architecture, integrations, governance, runtime controls, evidence collection, deployment models, and operational outcomes.',
+            )} <a href="/one">One</a><a href="/two">Two</a><a href="/three">Three</a></body></html>`,
+            { status: 200, headers: { 'content-type': 'text/html' } },
+          );
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }),
+    );
+
+    await dispatch(
+      {
+        id: 'req-sources-collect-context-limit',
+        command: 'market-sources-collect',
+        args: { market_id: marketId, 'max-pages': 1, 'max-depth': 1 },
+      },
+      { caller: 'host' },
+    );
+
+    const context = await dispatch(
+      {
+        id: 'req-crawl-context-limit',
+        command: 'market-sources-crawl-context',
+        args: { market_id: marketId, 'include-frontier': true, 'frontier-limit': 2 },
+      },
+      { caller: 'host' },
+    );
+
+    expect(context.ok).toBe(true);
+    if (context.ok) {
+      const data = context.data as {
+        frontier_count: number;
+        frontier_returned: number;
+        frontier_limit: number;
+        frontier: unknown[];
+      };
+      expect(data.frontier_count).toBe(3);
+      expect(data.frontier_returned).toBe(2);
+      expect(data.frontier_limit).toBe(2);
+      expect(data.frontier).toHaveLength(2);
+    }
+  });
+
+  it('continues website crawling from persisted open frontier before returning to source roots', async () => {
+    await registerMarketsResource();
+
+    const created = await dispatch(
+      {
+        id: 'req-create-market',
+        command: 'markets-create',
+        args: { name: 'AI Security', description: null },
+      },
+      { caller: 'host' },
+    );
+    expect(created.ok).toBe(true);
+    const marketId = (created as { ok: true; data: { market: { id: string } } }).data.market.id;
+
+    await dispatch(
+      {
+        id: 'req-source-add-frontier-continue',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: 'https://continue.example.com',
+          source_type: 'website',
+          trust_tier: 'official',
+        },
+      },
+      { caller: 'host' },
+    );
+
+    const fetchedUrls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        fetchedUrls.push(url);
+        if (url === 'https://continue.example.com/') {
+          return new Response(
+            `<html><head><title>Continue Home</title></head><body>${longText(
+              'Homepage describes AI security platform coverage, product strategy, governance, deployment architecture, integrations, and runtime controls.',
+            )} <a href="/about">About</a><a href="/security">Security</a><a href="/product">Product</a></body></html>`,
+            { status: 200, headers: { 'content-type': 'text/html' } },
+          );
+        }
+        if (url === 'https://continue.example.com/security') {
+          return new Response(
+            `<html><head><title>Security</title></head><body>${longText(
+              'Security page describes AI runtime monitoring, prompt injection protections, policy enforcement, audit trails, incident review, and governance workflows.',
+            )}</body></html>`,
+            { status: 200, headers: { 'content-type': 'text/html' } },
+          );
+        }
+        if (url === 'https://continue.example.com/product') {
+          return new Response(
+            `<html><head><title>Product</title></head><body>${longText(
+              'Product page describes AI application security posture, model gateway controls, data leakage prevention, and operational evidence capture.',
+            )}</body></html>`,
+            { status: 200, headers: { 'content-type': 'text/html' } },
+          );
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }),
+    );
+
+    const firstRun = await dispatch(
+      {
+        id: 'req-sources-collect-create-frontier',
+        command: 'market-sources-collect',
+        args: { market_id: marketId, 'max-pages': 1, 'max-depth': 1 },
+      },
+      { caller: 'host' },
+    );
+    expect(firstRun.ok).toBe(true);
+    const firstRunId = (firstRun as { ok: true; data: { run: { id: string } } }).data.run.id;
+
+    const continued = await dispatch(
+      {
+        id: 'req-sources-collect-continue-frontier',
+        command: 'market-sources-collect',
+        args: { market_id: marketId, 'continue-frontier': true, 'max-pages': 1, 'max-depth': 1 },
+      },
+      { caller: 'host' },
+    );
+
+    expect(continued.ok).toBe(true);
+    if (continued.ok) {
+      expect(continued.data).toMatchObject({
+        summary: {
+          visited: 1,
+          stored_documents: 1,
+          frontier_urls_loaded: 3,
+          frontier_urls_attempted: 1,
+          frontier_urls_updated: 3,
+        },
+        stored_documents: [{ url: 'https://continue.example.com/security' }],
+      });
+    }
+    expect(fetchedUrls).toEqual(['https://continue.example.com/', 'https://continue.example.com/security']);
+
+    const inspectedFirstRun = await dispatch(
+      {
+        id: 'req-run-get-frontier-after-continue',
+        command: 'market-runs-get',
+        args: { id: firstRunId, 'include-frontier': true },
+      },
+      { caller: 'host' },
+    );
+
+    expect(inspectedFirstRun.ok).toBe(true);
+    if (inspectedFirstRun.ok) {
+      const data = inspectedFirstRun.data as {
+        frontier: Array<{ url: string; reason: string; status: string }>;
+      };
+      expect(data.frontier).toEqual([
+        expect.objectContaining({
+          url: 'https://continue.example.com/security',
+          reason: 'max_pages',
+          status: 'fetched',
+        }),
+        expect.objectContaining({
+          url: 'https://continue.example.com/product',
+          reason: 'max_pages',
+          status: 'superseded',
+        }),
+        expect.objectContaining({
+          url: 'https://continue.example.com/about',
+          reason: 'max_pages',
+          status: 'superseded',
+        }),
+      ]);
+    }
+  });
+
   it('reports unchanged crawled pages without storing duplicate market documents', async () => {
     await registerMarketsResource();
 
@@ -1838,6 +2527,122 @@ describe('market sources CLI resource', () => {
         documents: [],
       });
     }
+  });
+
+  it('refreshes only stale sources and reports fresh sources as skipped', async () => {
+    await registerMarketsResource();
+
+    const created = await dispatch(
+      {
+        id: 'req-create-market',
+        command: 'markets-create',
+        args: { name: 'AI Security', description: null },
+      },
+      { caller: 'host' },
+    );
+    expect(created.ok).toBe(true);
+    const marketId = (created as { ok: true; data: { market: { id: string } } }).data.market.id;
+
+    const staleSource = await dispatch(
+      {
+        id: 'req-source-add-stale-refresh',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: 'https://stale.example.com/security',
+          source_type: 'exact_url',
+          trust_tier: 'official',
+        },
+      },
+      { caller: 'host' },
+    );
+    expect(staleSource.ok).toBe(true);
+    const staleSourceId = (staleSource as { ok: true; data: { source: { id: string } } }).data.source.id;
+
+    const freshSource = await dispatch(
+      {
+        id: 'req-source-add-fresh-refresh',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: 'https://fresh.example.com/security',
+          source_type: 'exact_url',
+          trust_tier: 'official',
+        },
+      },
+      { caller: 'host' },
+    );
+    expect(freshSource.ok).toBe(true);
+    const freshSourceId = (freshSource as { ok: true; data: { source: { id: string } } }).data.source.id;
+
+    const fetchedUrls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        fetchedUrls.push(url);
+        return new Response(
+          `<html><head><title>${url}</title></head><body>${longText(
+            `This page describes AI security evidence collection, runtime monitoring, governance, product controls, integrations, audit workflows, and operational review for ${url}.`,
+          )}</body></html>`,
+          { status: 200, headers: { 'content-type': 'text/html' } },
+        );
+      }),
+    );
+
+    const firstCollect = await dispatch(
+      {
+        id: 'req-sources-collect-before-refresh',
+        command: 'market-sources-collect',
+        args: { market_id: marketId },
+      },
+      { caller: 'host' },
+    );
+    expect(firstCollect.ok).toBe(true);
+
+    const staleFetchedAt = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+    getDb()
+      .prepare("UPDATE market_documents SET fetched_at = ?, created_at = ? WHERE source_id = ? AND status = 'fetched'")
+      .run(staleFetchedAt, staleFetchedAt, staleSourceId);
+
+    const refreshed = await dispatch(
+      {
+        id: 'req-sources-refresh-stale',
+        command: 'market-sources-collect',
+        args: { market_id: marketId, 'refresh-stale': true, 'stale-days': 60 },
+      },
+      { caller: 'host' },
+    );
+
+    expect(refreshed.ok).toBe(true);
+    if (refreshed.ok) {
+      expect(refreshed.data).toMatchObject({
+        summary: {
+          visited: 1,
+          stored_documents: 0,
+          unchanged_documents: 1,
+          skipped_sources: 1,
+          refresh_mode: 'stale',
+        },
+        unchanged_documents: [
+          {
+            source_id: staleSourceId,
+            url: 'https://stale.example.com/security',
+            status: 'unchanged',
+          },
+        ],
+        skipped_sources: [
+          {
+            source_id: freshSourceId,
+            url: 'https://fresh.example.com/security',
+            reason: 'fresh',
+          },
+        ],
+      });
+    }
+
+    expect(fetchedUrls).toHaveLength(3);
+    expect(fetchedUrls.filter((url) => url === 'https://stale.example.com/security')).toHaveLength(2);
+    expect(fetchedUrls.filter((url) => url === 'https://fresh.example.com/security')).toHaveLength(1);
   });
 
   it('reports still-unsupported research surfaces instead of treating them as exact URL fetches', async () => {

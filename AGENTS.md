@@ -159,6 +159,48 @@ Retry only sources whose latest stored document failed:
 pnpm ncl market-sources collect --market-id <MARKET_ID> --failed-only --json
 ```
 
+After collection, inspect crawl context before deciding the next step. Default output is compact and includes counts/diagnostics without dumping every frontier or skipped URL:
+
+```bash
+pnpm ncl market-sources crawl-context --market-id <MARKET_ID> --json
+```
+
+Use bounded drill-down only when the counts show you need examples:
+
+```bash
+pnpm ncl market-sources crawl-context --market-id <MARKET_ID> --include-frontier --frontier-limit 25 --json
+```
+
+If crawl context shows open `max_pages` or `max_depth` frontier URLs and the user wants more evidence from already accepted sources, continue from the persisted frontier:
+
+```bash
+pnpm ncl market-sources collect --market-id <MARKET_ID> --continue-frontier --json
+```
+
+If crawl context shows stale sources and the user wants to refresh old evidence, refresh only stale sources:
+
+```bash
+pnpm ncl market-sources collect --market-id <MARKET_ID> --refresh-stale --stale-days 60 --json
+```
+
+Use `--refresh-all` when the user explicitly wants to revisit all active accepted sources regardless of freshness:
+
+```bash
+pnpm ncl market-sources collect --market-id <MARKET_ID> --refresh-all --json
+```
+
+Inspect a specific collection run when you need skipped/frontier details. Keep limits small unless the user explicitly asks for a large audit dump:
+
+```bash
+pnpm ncl market-runs get <RUN_ID> --include-frontier --frontier-limit 25 --include-skipped --skipped-limit 25 --json
+```
+
+Collection output is compact by default. To see skipped URL examples from the collection response itself:
+
+```bash
+pnpm ncl market-sources collect --market-id <MARKET_ID> --include-skipped --skipped-limit 25 --json
+```
+
 Use compact document listing by default to avoid dumping full `content_text`:
 
 ```bash
@@ -177,13 +219,16 @@ Report:
 - number of stored documents
 - number of unchanged documents
 - number of failed documents
+- frontier continuation counters, if running `--continue-frontier`: `frontier_urls_loaded`, `frontier_urls_attempted`, and `frontier_urls_updated`
+- skipped fresh sources, if running stale refresh
 - skipped URLs and skip reasons, if any
 - unsupported source types, if any
 - document ids and titles for review
+- crawl-context diagnostics such as `zero_documents`, `docs_source_zero_yield`, `all_documents_failed`, `high_failure_rate`, `frontier_available`, `stale_source`, or `source_never_collected`
 
 Repeated collection of unchanged `exact_url`, `website`, or `docs` content should return `unchanged_documents` and should not create duplicate fetched evidence rows. Treat `stored_documents: 0` with `unchanged_documents > 0` as a successful no-op, not a failed collection.
 
-Current collection support is intentionally narrow. `exact_url` sources fetch one page. `website` and `docs` sources run a same-origin, HTML-only bounded crawl and store one document per page. The crawler normalizes discovered URLs by removing fragments and non-root trailing slashes before queueing/storing, skips common low-value paths such as careers, privacy, legal, contact, login/signup, demo/request-demo/book-a-demo, sales/talk-to-sales, get-started, events, webinars, press, and newsroom pages; it does not skip pricing pages. It prioritizes high-value paths such as docs, security, product, platform, solutions, customers, case studies, blog, changelog, integrations, pricing, developers, and API pages when crawl bounds cut off the run. Crawled HTML with less than 300 characters of extracted text is skipped as `low_quality_content`. Other valid source types such as `blog`, `rss`, `search_query`, `slack`, and `manual` should be reported as unsupported for collection v1, not treated as exact URLs.
+Current collection support is intentionally narrow. `exact_url` sources fetch one page. `website` and `docs` sources run a same-origin, HTML-only bounded crawl and store one document per page. The crawler normalizes discovered URLs by removing fragments and non-root trailing slashes before queueing/storing, skips common low-value paths such as careers, privacy, legal, contact, login/signup, demo/request-demo/book-a-demo, sales/talk-to-sales, get-started, events, webinars, press, and newsroom pages; it does not skip pricing pages. It prioritizes high-value paths such as docs, security, product, platform, solutions, customers, case studies, blog, changelog, integrations, pricing, developers, and API pages when crawl bounds cut off the run. Crawled HTML with less than 300 characters of extracted text is skipped as `low_quality_content`. Skipped/frontier URLs are persisted for later audit, but large arrays are omitted unless `--include-skipped` or `--include-frontier` is supplied with bounded limits. Open frontier rows are deduplicated by market, source, and normalized URL, so repeated bounded crawls keep one open work item per URL while preserving historical audit rows. `max_pages` and `max_depth` rows are treated as open frontier context, and `--continue-frontier` fetches those persisted frontier URLs before returning to roots. In continuation summaries, `frontier_urls_loaded` means open frontier rows loaded into the queue, `frontier_urls_attempted` means loaded frontier rows actually processed before crawl limits stopped the run, and `frontier_urls_updated` means old frontier rows whose status changed, including `superseded` rows left queued after the new run hit `max_pages`. `--refresh-stale` recollects only active sources whose latest fetched document is older than `--stale-days`, and reports fresh sources in `skipped_sources`; `--refresh-all` recollects all active sources. Crawl-context diagnostics are computed on read from stored facts; they are not recommendations and should not replace agent judgment. Other valid source types such as `blog`, `rss`, `search_query`, `slack`, and `manual` should be reported as unsupported for collection v1, not treated as exact URLs.
 
 ## Proposing Agent-Discovered Sources
 
@@ -545,6 +590,8 @@ Implemented:
 - market search context/history/record
 - exact URL source collection
 - bounded website/docs source collection
+- crawl frontier/skipped URL persistence
+- crawl context and market run inspection
 - market document storage/list/get
 - evidence-backed market candidate import/list/get/review
 - compact document and candidate listing
@@ -558,6 +605,7 @@ Implemented:
 Not implemented yet:
 
 - crawling for blogs
+- source-specific continuation/refresh flags such as `--source-id`
 - internal web search execution
 - RSS/Slack/manual connectors
 - internal LLM extraction
