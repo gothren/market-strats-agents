@@ -15,7 +15,33 @@ Website/docs crawling v1 and market search context/memory are already implemente
 
 # Active Prioritized Roadmap
 
-## P1 - Slack Connector
+## P1 - Continuous Market Improvement Agent Workflow
+
+Goal:
+
+- Give the external market strategy agent a repeatable operating loop for improving a market over time without making the CLI choose next actions.
+
+Context:
+
+- The CLI already exposes factual context through market search context/history, crawl context, candidate summaries, audits, changes, maps, and reports.
+- The product should keep judgment in the agent. The CLI should provide compact context, not smart recommendations.
+- The next gap is agent operating guidance: how to combine existing tools into an improvement cycle.
+
+Implementation notes:
+
+- Add an `AGENTS.md` workflow section for continuous market improvement.
+- Instruct the agent to gather context from existing commands, identify one improvement objective, act through existing search/collection/extraction/review workflows, record searches, and repeat.
+- Keep the workflow context-first and non-prescriptive: diagnostics are inputs, not recommendations.
+- Do not add a new `market-improvement suggest` command or other smart planner CLI for this item.
+- Update durable specs if needed to clarify that feedback loops currently mean agent operating guidance plus factual context, not automated self-improvement.
+
+Acceptance:
+
+- A tester agent can follow `AGENTS.md` to run a full improvement loop using existing CLI tools.
+- The workflow helps the agent improve source coverage, evidence freshness, weak/uncertain candidates, and review backlog without new CLI intelligence.
+- The backlog distinguishes future feedback-loop ideas from this v1 agent operating workflow.
+
+## P2 - Slack Connector
 
 Goal:
 
@@ -24,7 +50,7 @@ Goal:
 Context:
 
 - Slack can contain high-signal company or market context, but it has privacy and access implications.
-- It is less urgent than public-source acquisition.
+- It is less urgent than the continuous improvement workflow and public-source acquisition.
 
 Implementation notes:
 
@@ -39,7 +65,7 @@ Acceptance:
 - Stored Slack documents have clear provenance and privacy/access metadata.
 - Missing credentials or permissions produce clear unsupported/failed responses.
 
-## P2 - RSS Connector
+## P3 - RSS Connector
 
 Goal:
 
