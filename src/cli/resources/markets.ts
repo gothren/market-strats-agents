@@ -2367,10 +2367,12 @@ function candidateWithParsedJson(candidate: MarketCandidate) {
     ...candidate,
     evidence: JSON.parse(candidate.evidence_json) as MarketCandidateEvidence[],
     metadata: candidate.metadata_json ? (JSON.parse(candidate.metadata_json) as unknown) : null,
+    uncertainty: candidateUncertainty(candidate),
   };
 }
 
 function compactCandidate(candidate: MarketCandidate) {
+  const uncertainty = candidateUncertainty(candidate);
   return {
     id: candidate.id,
     candidate_type: candidate.candidate_type,
@@ -2378,6 +2380,7 @@ function compactCandidate(candidate: MarketCandidate) {
     summary: candidate.summary,
     confidence: candidate.confidence,
     status: candidate.status,
+    ...(uncertainty ? { uncertainty } : {}),
   };
 }
 
@@ -2390,6 +2393,7 @@ type MarketCandidateMapGroups = Record<
     confidence: MarketCandidateConfidence;
     review_note: string | null;
     evidence: MarketCandidateEvidence[];
+    uncertainty?: CandidateUncertainty;
   }>
 >;
 
@@ -2414,6 +2418,7 @@ function emptyCandidateMapGroups(): MarketCandidateMapGroups {
 }
 
 function marketCandidateMapItem(candidate: MarketCandidate) {
+  const uncertainty = candidateUncertainty(candidate);
   return {
     id: candidate.id,
     name: candidate.name,
@@ -2421,6 +2426,7 @@ function marketCandidateMapItem(candidate: MarketCandidate) {
     confidence: candidate.confidence,
     review_note: candidate.review_note,
     evidence: JSON.parse(candidate.evidence_json) as MarketCandidateEvidence[],
+    ...(uncertainty ? { uncertainty } : {}),
   };
 }
 
@@ -2452,6 +2458,23 @@ function markdownCandidateBullets(candidates: MarketCandidate[], emptyMessage: s
     (candidate) =>
       `- ${candidate.name} (${candidate.confidence}, ${candidate.id}): ${candidate.summary?.trim() || 'No summary.'}`,
   );
+}
+
+function markdownUncertaintyBullets(candidates: MarketCandidate[]): string[] {
+  const uncertain = candidates
+    .map((candidate) => ({ candidate, uncertainty: candidateUncertainty(candidate) }))
+    .filter(
+      (item): item is { candidate: MarketCandidate; uncertainty: CandidateUncertainty } => item.uncertainty !== null,
+    );
+
+  if (uncertain.length === 0) return ['No accepted candidate uncertainty flags.'];
+
+  return uncertain.map(({ candidate, uncertainty }) => {
+    const reasons =
+      uncertainty.reasons && uncertainty.reasons.length > 0 ? ` Reasons: ${uncertainty.reasons.join(', ')}.` : '';
+    const note = uncertainty.note?.trim() || 'No note provided.';
+    return `- ${candidate.name} (${uncertainty.status}): ${note}${reasons}`;
+  });
 }
 
 function renderMarketCandidateReport(input: {
@@ -2508,6 +2531,9 @@ function renderMarketCandidateReport(input: {
     }
   }
   lines.push('');
+  lines.push('## Uncertainty');
+  lines.push(...markdownUncertaintyBullets(input.candidates));
+  lines.push('');
   lines.push('## Evidence Appendix');
   if (input.candidates.length === 0) {
     lines.push('No accepted candidate evidence yet.');
@@ -2551,6 +2577,51 @@ function parsedCandidateMetadata(candidate: MarketCandidate): Record<string, unk
   const metadata = JSON.parse(candidate.metadata_json) as unknown;
   if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return null;
   return metadata as Record<string, unknown>;
+}
+
+const CANDIDATE_UNCERTAINTY_STATUSES = ['unknown', 'weak_evidence', 'conflicting', 'stale'] as const;
+type CandidateUncertaintyStatus = (typeof CANDIDATE_UNCERTAINTY_STATUSES)[number];
+type CandidateUncertainty = {
+  status: CandidateUncertaintyStatus;
+  reasons?: string[];
+  note?: string;
+  conflicts_with?: string[];
+  marked_by?: string;
+  marked_at?: string;
+};
+
+function stringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const strings = value.filter((item): item is string => typeof item === 'string' && item.trim() !== '');
+  return strings.length > 0 ? strings.map((item) => item.trim()) : undefined;
+}
+
+function candidateUncertainty(candidate: MarketCandidate): CandidateUncertainty | null {
+  const metadata = parsedCandidateMetadata(candidate);
+  const raw = metadata?.uncertainty;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  const status = record.status;
+  if (typeof status !== 'string' || !CANDIDATE_UNCERTAINTY_STATUSES.includes(status as CandidateUncertaintyStatus)) {
+    return null;
+  }
+
+  return {
+    status: status as CandidateUncertaintyStatus,
+    ...(stringArray(record.reasons) ? { reasons: stringArray(record.reasons) } : {}),
+    ...(typeof record.note === 'string' && record.note.trim() !== '' ? { note: record.note.trim() } : {}),
+    ...(stringArray(record.conflicts_with) ? { conflicts_with: stringArray(record.conflicts_with) } : {}),
+    ...(typeof record.marked_by === 'string' && record.marked_by.trim() !== ''
+      ? { marked_by: record.marked_by.trim() }
+      : {}),
+    ...(typeof record.marked_at === 'string' && record.marked_at.trim() !== ''
+      ? { marked_at: record.marked_at.trim() }
+      : {}),
+  };
+}
+
+function uncertaintyStatusForCandidate(candidate: MarketCandidate): CandidateUncertaintyStatus | null {
+  return candidateUncertainty(candidate)?.status ?? null;
 }
 
 function candidateStableKey(candidate: MarketCandidate): string | null {
@@ -2747,6 +2818,50 @@ function normalizedQuoteText(value: string): string {
 
 function candidateIsReadyForReview(findings: Array<{ severity: CandidateAuditSeverity }>): boolean {
   return findings.every((finding) => finding.severity === 'low');
+}
+
+function evidenceDocuments(candidate: MarketCandidate) {
+  return candidateEvidence(candidate)
+    .map((item) => getMarketDocument(item.document_id))
+    .filter((document): document is NonNullable<ReturnType<typeof getMarketDocument>> => document !== undefined);
+}
+
+function suggestedCandidateUncertainty(
+  candidate: MarketCandidate,
+  findings: Array<{ reason: CandidateAuditReason }>,
+): CandidateUncertainty | null {
+  if (candidateUncertainty(candidate)) return null;
+
+  const reasons = new Set<string>();
+  const staleCutoffMs = Date.now() - 90 * 24 * 60 * 60 * 1000;
+  const hasStaleEvidence = evidenceDocuments(candidate).some(
+    (document) => document.status === 'fetched' && new Date(document.fetched_at).getTime() < staleCutoffMs,
+  );
+  if (hasStaleEvidence) reasons.add('evidence_older_than_90_days');
+
+  for (const finding of findings) {
+    if (finding.reason === 'low_confidence') reasons.add('low_confidence');
+    if (finding.reason === 'single_evidence') reasons.add('single_evidence');
+    if (finding.reason === 'weak_evidence_quote') reasons.add('weak_evidence_quote');
+    if (finding.reason === 'missing_evidence_quote') reasons.add('missing_evidence_quote');
+    if (finding.reason === 'evidence_quote_not_found') reasons.add('evidence_quote_not_found');
+    if (finding.reason === 'evidence_document_missing') reasons.add('evidence_document_missing');
+    if (finding.reason === 'evidence_document_not_fetched') reasons.add('evidence_document_not_fetched');
+  }
+
+  if (reasons.size === 0) return null;
+  if (hasStaleEvidence) {
+    return {
+      status: 'stale',
+      reasons: Array.from(reasons),
+      note: 'Candidate evidence includes material older than 90 days; refresh evidence before relying on it.',
+    };
+  }
+  return {
+    status: 'weak_evidence',
+    reasons: Array.from(reasons),
+    note: 'Candidate has deterministic audit findings that indicate weak or incomplete evidence.',
+  };
 }
 
 function auditFinding(input: {
@@ -3322,7 +3437,15 @@ register({
     const duplicatesById = duplicateCandidateIds(candidates);
     const candidatesWithFindings = candidates.map((candidate) => {
       const findings = auditCandidate(candidate, duplicatesById);
-      return { candidate, findings, ready_for_review: candidateIsReadyForReview(findings) };
+      const uncertainty = candidateUncertainty(candidate);
+      const suggested_uncertainty = suggestedCandidateUncertainty(candidate, findings);
+      return {
+        candidate,
+        findings,
+        ready_for_review: candidateIsReadyForReview(findings),
+        uncertainty,
+        suggested_uncertainty,
+      };
     });
     const visibleCandidates = candidatesWithFindings
       .map((item) => ({
@@ -3339,6 +3462,9 @@ register({
         return true;
       });
     const findings = visibleCandidates.flatMap((item) => item.visible_findings);
+    const uncertaintyStatuses = visibleCandidates
+      .map((item) => item.uncertainty?.status ?? item.suggested_uncertainty?.status ?? null)
+      .filter((status): status is CandidateUncertaintyStatus => status !== null);
 
     return {
       summary: {
@@ -3350,18 +3476,23 @@ register({
         findings: findings.length,
         by_reason: countBy(findings.map((finding) => finding.reason)),
         by_severity: countBy(findings.map((finding) => finding.severity)),
+        by_uncertainty_status: countBy(uncertaintyStatuses),
         filters: {
           severity: args.severity,
           reason: args.reason,
           ready: args.ready,
         },
       },
-      candidates: visibleCandidates.map(({ candidate, visible_findings, ready_for_review }) => ({
-        ...compactCandidate(candidate),
-        ready_for_review,
-        finding_count: visible_findings.length,
-        reasons: Array.from(new Set(visible_findings.map((finding) => finding.reason))),
-      })),
+      candidates: visibleCandidates.map(
+        ({ candidate, visible_findings, ready_for_review, uncertainty, suggested_uncertainty }) => ({
+          ...compactCandidate(candidate),
+          ready_for_review,
+          finding_count: visible_findings.length,
+          reasons: Array.from(new Set(visible_findings.map((finding) => finding.reason))),
+          uncertainty,
+          suggested_uncertainty,
+        }),
+      ),
       findings,
       next_actions: [
         `ncl market-candidates list --market-id ${args.market_id} --status ${args.status} --compact`,
@@ -3395,6 +3526,11 @@ register({
       summary: {
         total: accepted.length,
         by_type: countBy(accepted.map((candidate) => candidate.candidate_type)),
+        by_uncertainty_status: countBy(
+          accepted
+            .map(uncertaintyStatusForCandidate)
+            .filter((status): status is CandidateUncertaintyStatus => status !== null),
+        ),
       },
       next_actions: [
         `ncl market-candidates summary --market-id ${args.market_id}`,
@@ -3436,6 +3572,11 @@ register({
       summary: {
         total: accepted.length,
         by_type: countBy(accepted.map((candidate) => candidate.candidate_type)),
+        by_uncertainty_status: countBy(
+          accepted
+            .map(uncertaintyStatusForCandidate)
+            .filter((status): status is CandidateUncertaintyStatus => status !== null),
+        ),
       },
       next_actions: [
         `ncl market-candidates map --market-id ${args.market_id}`,

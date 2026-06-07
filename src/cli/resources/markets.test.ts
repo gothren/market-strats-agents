@@ -4376,6 +4376,80 @@ describe('market candidates CLI resource', () => {
     }
   });
 
+  it('surfaces candidate uncertainty metadata in compact and full candidate output', async () => {
+    const { marketId, documentId } = await createDocumentFixture();
+    const uncertainty = {
+      status: 'weak_evidence',
+      reasons: ['single_source', 'vendor_claim_only'],
+      note: 'Only one official product page supports this candidate.',
+      marked_by: 'agent',
+    };
+    const payloadFile = writePayload({
+      candidates: [
+        {
+          candidate_type: 'capability',
+          name: 'Runtime AI monitoring',
+          summary: 'Monitors AI application behavior at runtime.',
+          confidence: 'medium',
+          evidence: [{ document_id: documentId, quote: 'protects AI applications', note: 'Runtime evidence' }],
+          metadata: {
+            stable_key: 'capability:runtime_ai_monitoring',
+            uncertainty,
+          },
+        },
+      ],
+    });
+
+    const imported = await dispatch(
+      {
+        id: 'req-candidates-import-uncertainty',
+        command: 'market-candidates-import',
+        args: { market_id: marketId, 'payload-file': payloadFile },
+      },
+      { caller: 'host' },
+    );
+    expect(imported.ok).toBe(true);
+    const candidateId = (imported as { ok: true; data: { candidates: Array<{ id: string }> } }).data.candidates[0].id;
+
+    const compact = await dispatch(
+      {
+        id: 'req-candidates-list-uncertainty-compact',
+        command: 'market-candidates-list',
+        args: { market_id: marketId, compact: true },
+      },
+      { caller: 'host' },
+    );
+    expect(compact.ok).toBe(true);
+    if (compact.ok) {
+      expect((compact.data as { candidates: Array<Record<string, unknown>> }).candidates[0]).toMatchObject({
+        id: candidateId,
+        uncertainty,
+      });
+    }
+
+    const full = await dispatch(
+      {
+        id: 'req-candidates-get-uncertainty',
+        command: 'market-candidates-get',
+        args: { id: candidateId },
+      },
+      { caller: 'host' },
+    );
+    expect(full.ok).toBe(true);
+    if (full.ok) {
+      expect(full.data).toMatchObject({
+        candidate: {
+          id: candidateId,
+          metadata: {
+            stable_key: 'capability:runtime_ai_monitoring',
+            uncertainty,
+          },
+          uncertainty,
+        },
+      });
+    }
+  });
+
   it('summarizes candidates by status, type, confidence, and latest extraction run', async () => {
     const { marketId, documentId } = await createDocumentFixture();
     const payloadFile = writePayload({
@@ -5058,6 +5132,81 @@ describe('market candidates CLI resource', () => {
     }
   });
 
+  it('suggests uncertainty during candidate audit without mutating candidate metadata', async () => {
+    const { marketId, documentId } = await createDocumentFixture();
+    const staleFetchedAt = new Date(Date.now() - 120 * 24 * 60 * 60 * 1000).toISOString();
+    getDb().prepare('UPDATE market_documents SET fetched_at = ? WHERE id = ?').run(staleFetchedAt, documentId);
+
+    const imported = await dispatch(
+      {
+        id: 'req-candidates-import-audit-uncertainty',
+        command: 'market-candidates-import',
+        args: {
+          market_id: marketId,
+          'payload-file': writePayload({
+            candidates: [
+              {
+                candidate_type: 'claim',
+                name: 'Vendor-reported runtime protection',
+                summary: 'Vendor says it protects AI applications at runtime.',
+                confidence: 'low',
+                evidence: [{ document_id: documentId, quote: 'Vendor protects AI applications', note: 'Vendor claim' }],
+                metadata: { stable_key: 'claim:vendor_reported_runtime_protection' },
+              },
+            ],
+          }),
+        },
+      },
+      { caller: 'host' },
+    );
+    expect(imported.ok).toBe(true);
+    const candidateId = (imported as { ok: true; data: { candidates: Array<{ id: string }> } }).data.candidates[0].id;
+
+    const audit = await dispatch(
+      {
+        id: 'req-candidates-audit-uncertainty',
+        command: 'market-candidates-audit',
+        args: { market_id: marketId },
+      },
+      { caller: 'host' },
+    );
+
+    expect(audit.ok).toBe(true);
+    if (audit.ok) {
+      const data = audit.data as {
+        summary: Record<string, unknown>;
+        candidates: Array<Record<string, unknown>>;
+      };
+      expect(data.summary).toMatchObject({
+        by_uncertainty_status: {
+          stale: 1,
+        },
+      });
+      expect(data.candidates[0]).toMatchObject({
+        id: candidateId,
+        uncertainty: null,
+        suggested_uncertainty: {
+          status: 'stale',
+          reasons: expect.arrayContaining(['evidence_older_than_90_days', 'low_confidence', 'single_evidence']),
+          note: expect.stringContaining('older than 90 days'),
+        },
+      });
+    }
+
+    const fetched = await dispatch(
+      {
+        id: 'req-candidates-get-after-audit-uncertainty',
+        command: 'market-candidates-get',
+        args: { id: candidateId },
+      },
+      { caller: 'host' },
+    );
+    expect(fetched.ok).toBe(true);
+    if (fetched.ok) {
+      expect((fetched.data as { candidate: { uncertainty?: unknown } }).candidate.uncertainty).toBeNull();
+    }
+  });
+
   it('updates candidate extracted content from a replacement payload', async () => {
     const { marketId, documentId } = await createDocumentFixture();
     const imported = await dispatch(
@@ -5327,6 +5476,13 @@ describe('market candidates CLI resource', () => {
           summary: 'Vendor says it protects AI applications at runtime.',
           confidence: 'low',
           evidence: [{ document_id: documentId, quote: 'Vendor protects AI applications', note: 'Vendor claim' }],
+          metadata: {
+            uncertainty: {
+              status: 'weak_evidence',
+              reasons: ['vendor_claim_only'],
+              note: 'Accepted as vendor-reported but not independently verified.',
+            },
+          },
         },
         {
           candidate_type: 'claim',
@@ -5443,6 +5599,11 @@ describe('market candidates CLI resource', () => {
       };
       expect(data.groups.claims).toHaveLength(1);
       expect(data.groups.claims[0].name).not.toBe('Unreviewed claim');
+      expect(data.groups.claims[0].uncertainty).toEqual({
+        status: 'weak_evidence',
+        reasons: ['vendor_claim_only'],
+        note: 'Accepted as vendor-reported but not independently verified.',
+      });
       expect(data.groups.companies[0].evidence_json).toBeUndefined();
       expect(data.groups.companies[0].metadata_json).toBeUndefined();
       expect(data.groups.companies[0].metadata).toBeUndefined();
@@ -5480,6 +5641,7 @@ describe('market candidates CLI resource', () => {
         summary: {
           total: 0,
           by_type: {},
+          by_uncertainty_status: {},
         },
         next_actions: expect.arrayContaining([expect.stringContaining('market-candidates list')]),
       });
@@ -5550,6 +5712,13 @@ describe('market candidates CLI resource', () => {
           summary: 'Vendor says it protects AI applications at runtime.',
           confidence: 'low',
           evidence: [{ document_id: documentId, quote: 'Vendor protects AI applications', note: 'Vendor claim' }],
+          metadata: {
+            uncertainty: {
+              status: 'weak_evidence',
+              reasons: ['vendor_claim_only'],
+              note: 'Accepted as vendor-reported but not independently verified.',
+            },
+          },
         },
         {
           candidate_type: 'claim',
@@ -5635,6 +5804,10 @@ describe('market candidates CLI resource', () => {
       expect(data.markdown).toContain('| Example Vendor | Builds code security tooling. | high |');
       expect(data.markdown).toContain('## Problem-To-Solution Map');
       expect(data.markdown).toContain('No reviewed problem-to-solution relationships are inferred in v1.');
+      expect(data.markdown).toContain('## Uncertainty');
+      expect(data.markdown).toContain(
+        '- Vendor-reported runtime protection (weak_evidence): Accepted as vendor-reported but not independently verified.',
+      );
       expect(data.markdown).toContain(`- ${companyId} / ${documentId}: "Vendor protects"`);
       expect(data.markdown).not.toContain('Unreviewed claim');
     }

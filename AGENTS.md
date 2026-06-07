@@ -409,6 +409,24 @@ Create a local JSON payload with typed candidates. Each candidate must include e
 
 Valid candidate types are `company`, `product`, `problem`, `capability`, `category`, and `claim`. Valid confidence values are `low`, `medium`, and `high`.
 
+If evidence is weak, stale, conflicting, or unknown, keep the candidate review state unchanged and mark uncertainty in metadata instead of overstating certainty:
+
+```json
+{
+  "metadata": {
+    "stable_key": "capability:runtime_ai_monitoring",
+    "uncertainty": {
+      "status": "weak_evidence",
+      "reasons": ["single_source", "vendor_claim_only"],
+      "note": "Only one official product page supports this candidate.",
+      "marked_by": "agent"
+    }
+  }
+}
+```
+
+Valid uncertainty statuses are `unknown`, `weak_evidence`, `conflicting`, and `stale`. Use `unknown` when the agent cannot resolve an important point from stored evidence, `weak_evidence` when support exists but is thin or vendor-only, `conflicting` when stored evidence disagrees, and `stale` when evidence may no longer reflect the current market.
+
 Validate the payload before importing. Use `--dedupe` by default for agent-generated extraction payloads so repeated extraction runs flag duplicates instead of creating duplicate candidates:
 
 ```bash
@@ -463,6 +481,8 @@ pnpm ncl market-candidates audit --market-id <MARKET_ID> --json
 The audit is deterministic guardrails, not semantic judgment. Treat findings as a work queue: inspect evidence, improve quotes/summaries, update candidates whose identity is right, reject weak candidates, or ask the user. Common findings include low confidence, generic names, short/missing summaries, missing/short quotes, quotes not found in stored document text, single-evidence candidates, and duplicate normalized names.
 
 Low-severity findings are advisory and do not block `ready_for_review`. Medium/high findings require attention before asking the user to accept the candidate.
+
+Audit output may include `suggested_uncertainty` for stale or weak evidence. This is read-only and does not mutate candidate metadata. If the uncertainty should be durable, update the candidate payload with `metadata.uncertainty` before review.
 
 Useful audit filters:
 
@@ -552,6 +572,7 @@ pnpm ncl market-candidates map --market-id <MARKET_ID> --json
 ```
 
 The computed map groups accepted candidates into companies, products, problems, capabilities, categories, and claims. Treat accepted candidates as the source of truth; do not create separate facts or market-map rows.
+Accepted candidate uncertainty is included in map output when present.
 
 Generate a Markdown market report from accepted candidates:
 
@@ -561,6 +582,7 @@ pnpm ncl market-candidates report --market-id <MARKET_ID> --output-file /private
 ```
 
 The report is read-only and uses accepted candidates only. It includes market definition, category map, company/product table, problems, capabilities, claims, known gaps, and an evidence appendix. The v1 problem-to-solution section does not infer relationships that were not reviewed.
+Accepted candidate uncertainty appears in the report so weak, stale, conflicting, or unknown intelligence stays visible.
 
 Suggested review notes:
 

@@ -15,29 +15,7 @@ Website/docs crawling v1 and market search context/memory are already implemente
 
 # Active Prioritized Roadmap
 
-## P1 - Review States For Unknowns, Conflicts, And Staleness
-
-Goal:
-
-- Represent uncertainty explicitly in review workflows.
-
-Context:
-
-- The product spec treats unknowns, conflicts, and stale evidence as first-class output.
-- Current candidate statuses are enough for basic review, but not enough for richer market intelligence workflows.
-
-Implementation notes:
-
-- Do not add this until basic candidate/report/change workflows start needing it.
-- Prefer extending candidate metadata/review summaries before adding new tables.
-- Keep accepted/proposed/rejected behavior backward compatible.
-
-Acceptance:
-
-- Agent can mark or surface weak, conflicting, stale, or unknown intelligence in a structured way.
-- Reports can include uncertainty sections without unsupported guesses.
-
-## P2 - Slack Connector
+## P1 - Slack Connector
 
 Goal:
 
@@ -61,7 +39,7 @@ Acceptance:
 - Stored Slack documents have clear provenance and privacy/access metadata.
 - Missing credentials or permissions produce clear unsupported/failed responses.
 
-## P3 - RSS Connector
+## P2 - RSS Connector
 
 Goal:
 

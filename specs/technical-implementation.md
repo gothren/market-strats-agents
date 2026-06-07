@@ -117,6 +117,17 @@ Change detection is read-only and compares proposed candidates against accepted 
 
 The command classifies proposed candidates as `new`, `duplicate`, or `changed`, and reports changed fields such as name, summary, confidence, evidence, and metadata. It supports action-focused filters such as `--classification changed`, `--classification duplicate`, and `--missing-stable-key true`. Each item includes a deterministic `recommended_action` so agents can turn the output into a review work queue. It does not perform fuzzy semantic matching, does not use an internal LLM, and does not mutate accepted review state.
 
+Candidate uncertainty is represented in `market_candidates.metadata_json.uncertainty`, not as a separate table or review status. Candidate lifecycle remains `proposed`, `accepted`, or `rejected`; uncertainty is extra intelligence about how much trust to place in the candidate.
+
+Supported uncertainty statuses:
+
+- `unknown`: important details are not resolved by stored evidence.
+- `weak_evidence`: evidence exists but is thin, vendor-only, low-confidence, or otherwise not strong.
+- `conflicting`: stored evidence disagrees.
+- `stale`: evidence may no longer reflect the current market.
+
+Agents can write uncertainty metadata when importing or updating candidates. Candidate list/get, read-only market maps, and Markdown reports surface parsed uncertainty. Candidate audit can suggest `weak_evidence` or `stale` uncertainty from deterministic checks such as low confidence, single evidence, missing quotes, quotes not found in stored documents, and evidence older than 90 days. Audit suggestions are read-only and do not mutate metadata; agents must update the candidate if the uncertainty should become durable.
+
 ## Source Proposal Rules
 
 External agents may use their own search tools. This repo stores their URL findings as source proposals so discovery remains auditable and reviewable.
