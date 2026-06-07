@@ -2,234 +2,184 @@
 
 ## Product Summary
 
-The Market Strategy Agent is a local-first market intelligence workbench for product strategists. It helps a user define a market, discover relevant companies and products, categorize the market, retain evidence, and track how the market changes over time.
+The Market Strategy Agent is an agent-operated market intelligence product for product strategists. A user talks to an agent through Codex, Claude Code, NanoClaw, Slack, WhatsApp, or similar channels. The agent uses durable market tools to define markets, discover sources, collect evidence, extract intelligence, review uncertainty, and produce market reports.
 
-The product should be generic. The user defines the market during setup, such as "AI Security", "Code Security", "Cloud Cost Optimization", or any other category. AI Security is an example, not a hard-coded product scope.
+The product is generic across user-defined markets. "AI Security" is an example market, not a hard-coded scope.
 
-The agent should not behave like an answer machine that guesses. It should gather evidence, propose structure, make uncertainty visible, and let the user review important changes.
+The product must not guess. Durable intelligence should be grounded in stored evidence. When evidence is weak, stale, contradictory, or missing, the agent should expose that uncertainty and ask the user only when judgment is needed.
 
-## Current V1 Product Shape
+## Operating Modes
 
-The current implementation path uses reviewed `market_candidates` as the source of truth for market intelligence. Accepted candidates preserve evidence, confidence, review state, and review notes.
+The product must support two modes.
 
-For now, the product should compute market overview output from accepted candidates without writing separate durable facts or market-map tables. Add durable facts, canonical relationship editing, or versioned market-map tables only after duplicate accepted candidates, canonical naming, recategorization history, or stable report generation creates real product pain.
+### 1. Manual / User Prompt-Driven Mode
 
-Current evidence flow:
+The entire workflow is chat-driven. The user works with Codex, Claude Code, or another coding/automation agent that has the market CLI available.
+
+After each meaningful step, the agent should summarize what happened and propose the next action with clear options, such as search for sources, review proposed sources, crawl accepted sources, extract candidates, review uncertain candidates, generate a report, or ask an ad-hoc question.
+
+Core manual workflows:
+
+1. Add a market.
+   - The agent guides the user through market creation.
+   - The agent captures market name, description, inclusions, exclusions, adjacent markets, notes, and seed sources.
+
+2. Search for market sources.
+   - The user asks the agent to search for sources.
+   - The agent uses external search tools, records search history, and imports findings as source proposals.
+   - The agent should auto-approve or reject low-ambiguity proposals using documented policy.
+   - The agent asks the user only when it has doubts.
+   - When user review is needed, the agent presents a recommendation.
+
+3. Improve source discovery for an existing market.
+   - The user asks the agent to improve prior results.
+   - The agent reads market context and search history, avoids repeating recent searches, searches stale or uncovered areas, and handles proposals as in the normal source-search workflow.
+
+4. Crawl market sources.
+   - The user asks the agent to crawl accepted sources.
+   - The agent collects evidence from supported source types and reports a concise crawl summary.
+
+5. Improve crawling for an existing market.
+   - The user asks the agent to crawl again or improve crawl results.
+   - The agent reads crawl context, continues open frontier when useful, refreshes stale sources when useful, and reports the outcome.
+
+6. Extract data from crawled documents.
+   - The user asks the agent to extract companies, products, problems, capabilities, categories, and claims.
+   - The agent reads stored documents, creates evidence-backed candidates, validates/imports them, audits them, and auto-approves candidates that meet documented policy.
+   - The agent asks the user to review only candidates it has doubts about.
+
+7. Generate a market report.
+   - The user asks for a report.
+   - The agent generates JSON overview output or a Markdown report from accepted candidates.
+   - The agent writes requested report files to disk.
+
+8. Answer ad-hoc market questions.
+   - The user asks about a market, company, capability, problem, category, source, or evidence item.
+   - The agent answers from stored evidence and accepted candidates when possible, cites or references evidence, and says when the stored evidence is insufficient.
+
+### 2. Agent Autonomous Workflow
+
+The workflow is mostly autonomous, with minimal user prompting. The user configures a NanoClaw instance and communicates with it through Slack, WhatsApp, email, terminal, or another configured channel. The agent should use the same channel to ask questions and send reports.
+
+Core autonomous workflows:
+
+1. Configure the autonomous agent.
+   - The user configures communication integrations such as Slack, WhatsApp, or email.
+   - The user configures budget limits such as maximum token spend, ideally with a daily limit.
+   - The product should reuse NanoClaw's integration, scheduling, and channel model where possible.
+
+2. Add a market.
+   - The agent guides initial market creation as in manual mode.
+
+3. Autonomous source discovery.
+   - The agent periodically initiates source discovery without explicit user prompts.
+   - The agent does this across all active markets and prioritizes work across markets.
+   - The agent improves results over time using search history, accepted candidates, known gaps, and prior proposal decisions.
+   - The agent asks the user only when it has doubts about a source; uncertainty should not block other autonomous work.
+
+4. Autonomous crawling.
+   - The agent periodically crawls accepted sources without explicit user prompts.
+   - The agent does this across all active markets and prioritizes work across markets.
+   - The agent improves results over time using crawl context, open frontier, stale source context, and source outcomes.
+
+5. Autonomous extraction and review.
+   - The agent periodically extracts data from stored market documents.
+   - The agent does this across all active markets and prioritizes work across markets.
+   - The agent auto-approves extracted candidates that meet documented policy.
+   - The agent asks the user only when it has doubts about extracted intelligence; uncertainty should not block other autonomous work.
+
+6. Autonomous reporting.
+   - The agent periodically generates market reports for all active markets.
+   - The agent sends reports to the user on a configured cadence, such as every few days per market.
+
+7. Ad-hoc questions.
+   - The user can explicitly prompt the agent at any time with questions about a market, company, capability, problem, source, or report.
+
+## Product Principles
+
+- The CLI provides context; the agent decides.
+- Data is persisted in a database even if the agent dies.
+- For autonomous use, reuse NanoClaw as the basis for agent execution, scheduling, channels, and integrations.
+- For user workflow integrations such as Slack, WhatsApp, and email, reuse NanoClaw integrations where possible.
+- The agent should auto-approve low-ambiguity work and ask the user only on doubts.
+- Doubt should be explicit and auditable, not hidden in prose.
+- Accepted market intelligence comes from reviewed/accepted candidates, not from live URLs or unsupported inference.
+- Market maps are continuously improvable and should not claim complete coverage.
+
+## Core Data Flow
+
+The current product should use accepted `market_candidates` as the source of truth for market intelligence.
 
 ```text
-market_sources
+market setup
+  -> source discovery
+  -> market_source_proposals
+  -> accepted market_sources
   -> market_runs
   -> market_documents
-  -> market_candidates
+  -> extracted market_candidates
   -> reviewed/accepted market_candidates
-  -> computed market overview
+  -> computed overview/report
+  -> improvement loop
 ```
 
-## Primary User
+Do not add separate durable market facts or market-map tables yet. Compute market maps and reports from accepted candidates until real workflow pain appears around duplicate accepted candidates, canonical naming, relationship editing, recategorization history, or stable report generation.
 
-The primary first user is a product strategist working for a company in or near the market being researched.
+## Review, Auto-Approval, And Doubt
 
-The product should optimize for:
+The product should separate proposed, accepted, and rejected intelligence.
 
-- market overview
-- category definition
-- company and product tracking
-- problem and capability mapping
-- evidence-backed reasoning
-- change detection between runs
-- non-technical terminal onboarding
+The agent should auto-approve only when the item is low ambiguity. Examples:
 
-## Core Use Cases
+- source proposal is clearly official, in-scope, non-duplicate, and has an explicit source type.
+- candidate has valid evidence, medium/high confidence, matching quotes, no medium/high audit findings, no stale/conflicting/unknown uncertainty, and clear market relevance.
 
-1. Discover companies in a user-defined market.
-   - Find relevant companies.
-   - Capture their websites.
-   - Produce a very short brief on what problems they solve and what solutions they apply.
+The agent should ask the user when it has doubts. Examples:
 
-2. Categorize companies and products.
-   - Create a market overview by category.
-   - Track both companies and products because one company may have multiple relevant offerings.
-   - Propose category splits, merges, or additions as the market evolves.
+- source relevance is ambiguous.
+- source is third-party, private, duplicated, low-trust, or adjacent to the market boundary.
+- candidate has low confidence, weak evidence, stale evidence, conflicting evidence, missing quotes, quote mismatches, generic naming, duplicate identity, or unclear market fit.
+- boundary or category choices require product-strategy judgment.
 
-3. Retain enough evidence to recategorize periodically.
-   - Store source documents, extracted claims, and evidence links.
-   - Preserve run history.
-   - Show what changed since the previous run.
-   - Support future recategorization when companies pivot or the market changes.
+Review questions should not block unrelated autonomous work. The agent should continue other markets or tasks while waiting for user input.
 
-4. Map problems to solutions and technical capabilities.
-   - Identify user problems and use cases these companies address.
-   - Identify solution categories.
-   - Identify technical capabilities used by products or companies.
-   - Link every accepted claim to evidence.
+## Evidence And Source Model
 
-5. Avoid guessing.
-   - Every accepted company fact, product fact, category assignment, problem, or capability should have linked evidence.
-   - If evidence is missing, weak, stale, or contradictory, the agent should show that explicitly.
-   - Unknowns are first-class output.
+`market_sources` are research surfaces the agent is allowed to inspect. They may be websites, docs roots, RSS feeds, Slack connectors, exact URLs, or manual sources.
 
-6. Customize source discovery.
-   - The agent should be able to use web search.
-   - The user should be able to provide seed URLs.
-   - The agent should be able to periodically propose additional seed URLs.
-   - The architecture should support source connectors such as Slack, RSS, Google Drive, SEC filings, and other future sources.
+`market_documents` are individual retrieved evidence artifacts. Store one document per content unit:
 
-7. Provide easy non-technical onboarding.
-   - First version should run from the terminal.
-   - The setup flow should be guided.
-   - If the user does not provide enough setup detail, the agent may infer a draft market boundary and seed set from search, then ask the user to verify before saving durable configuration.
-   - Future interfaces may include Slack, WhatsApp, or other messaging channels, ideally using NanoClaw's existing channel model.
+- website/docs crawl: one page per document
+- blog/RSS: one article or feed entry per document
+- Slack: one message or thread per document
+- exact URL: one fetched page/report/PDF per document
+- manual: one user-provided artifact per document
 
-## Setup Flow
+Extraction and categorization should operate on stored `market_documents`, not directly on live URLs.
 
-The first-run setup should collect a guided market brief:
+Source trust and provenance must remain visible. Official vendor websites/docs are generally higher trust than third-party commentary; private sources such as Slack need explicit privacy/access metadata.
 
-- market name
-- market boundary
-- explicit inclusions
-- explicit exclusions
-- seed companies
-- seed URLs
-- preferred or restricted source types
-- desired analysis lens, such as product strategist, buyer, investor, or competitor lens
+## Reports And Ad-Hoc Answers
 
-If the user omits details, the agent may infer draft values from search. Inferred setup values must be verified by the user before they become durable configuration.
+Reports should be generated from accepted candidates and stored evidence. V1 report formats should include JSON overview output and Markdown files written to disk.
 
-## Market Boundary Management
-
-The agent needs a durable market boundary so search results and categorization do not drift.
-
-The boundary should define:
-
-- what is in scope
-- what is out of scope
-- ambiguous adjacent categories
-- preferred terminology
-- known competitors or reference companies
-
-The agent may propose updates to the boundary over time, but should not silently rewrite it.
-
-## Source Trust and Evidence
-
-Not all sources should be weighted equally. The product should support source trust tiers.
-
-Suggested tiers:
-
-- Tier 1: official company websites, docs, and blogs
-- Tier 2: trusted user-provided URLs
-- Tier 3: reputable third-party sources
-- Tier 4: general web search results
-- Tier 5: internal or private sources such as Slack, with privacy labels
-
-The agent should retain provenance for every source:
-
-- source type
-- URL or permalink
-- title
-- author or organization where available
-- observed timestamp
-- fetched timestamp
-- access level
-- associated market
-- associated run
-
-## Source Proposal Workflow
-
-The product should treat web search as an agent capability, not necessarily an internal product capability. An external agent may use its own search tools to find likely company websites, docs, blogs, pricing pages, or other research surfaces.
-
-Those findings should enter the product as `market_source_proposals`, not immediately as active sources. A proposal records the URL, intended source type, trust tier suggestion, title or snippet, rationale, discovery method, search query, and optional proposed entity name/type.
-
-Proposals start as `proposed`. A user or agent review can mark them `accepted` or `rejected`. Accepted proposals become ordinary `market_sources` and have the same operational weight as user-provided sources, while preserving proposal provenance and review notes. Rejected proposals remain durable memory of what was considered so repeated searches do not keep resurfacing the same low-quality sources.
-
-## Review Workflow
-
-The agent should separate accepted intelligence from proposed intelligence.
-
-The product should support:
-
-- accepted facts
-- proposed facts
-- rejected facts
-- unknowns
-- conflicts
-- stale evidence
-
-Important changes should go through review before becoming accepted state.
-
-Examples of reviewable changes:
-
-- new company discovered
-- company removed or marked inactive
-- new product discovered
-- category assignment changed
-- new category proposed
-- category split or merge proposed
-- problem or capability claim changed
-- contradictory evidence found
-- new seed URL proposed
-
-## Change Detection
-
-Each scan should compare against the previous accepted state and produce a change summary.
-
-The change summary should include:
-
-- new companies
-- removed or inactive companies
-- new products
-- changed positioning
-- category moves
-- newly detected capabilities
-- changed problems or use cases
-- newly discovered sources
-- contradictory evidence
-- stale profiles that need refresh
-
-## Primary Report
-
-The primary v1 output should be a Markdown report shown in the terminal and saved to disk.
-
-The report should include:
+Reports should cover:
 
 - market definition
 - category map
-- company and product table
-- problem-to-solution map
-- capability map
-- new findings since the previous run
-- proposed recategorizations
-- weak, stale, contradictory, or unknown areas
+- companies and products
+- problems and capabilities
+- claims
+- weak, stale, conflicting, or unknown areas
 - evidence appendix
 
-## Connector and Skill Model
+Ad-hoc answers should use the same durable state. The agent should answer from accepted candidates and stored documents, cite evidence where possible, and state when evidence is missing or insufficient.
 
-The source customization model should follow this design rule:
+## Current V1 Non-Goals
 
-- source and connector skills produce normalized evidence
-- the core turns evidence into market intelligence
-- behavior skills tune the core's extraction, scoring, ranking, and reporting
-
-Examples of connector skills:
-
-- web search connector
-- curated URL connector
-- Slack connector
-- RSS connector
-- Google Drive connector
-- SEC filings connector
-
-Examples of behavior skills:
-
-- product strategist lens
-- buyer evaluation lens
-- investor landscape lens
-- competitor monitoring lens
-- enterprise-readiness scoring lens
-
-## Non-Goals for V1
-
-- No web dashboard in v1.
-- No messaging interface in v1, although the architecture should leave room for Slack, WhatsApp, or similar channels later.
-- No fully autonomous hidden recategorization. Important changes should be proposed for review.
+- No web dashboard.
+- No internal LLM extraction engine unless the agent-driven workflow becomes too repetitive or painful.
+- No CLI command that tries to plan the next market-improvement action; the CLI should expose context and the agent should decide.
+- No fully autonomous hidden recategorization without review/auto-approval policy.
 - No unsupported guesses in accepted output.
-- No hard-coded AI Security-only assumptions.
+- No hard-coded AI Security assumptions.
