@@ -2310,6 +2310,82 @@ describe('market sources CLI resource', () => {
     }
   });
 
+  it('compacts crawl-context recent run summary arrays', async () => {
+    await registerMarketsResource();
+
+    const created = await dispatch(
+      {
+        id: 'req-create-market',
+        command: 'markets-create',
+        args: { name: 'AI Security', description: null },
+      },
+      { caller: 'host' },
+    );
+    expect(created.ok).toBe(true);
+    const marketId = (created as { ok: true; data: { market: { id: string } } }).data.market.id;
+
+    await dispatch(
+      {
+        id: 'req-source-add-context-compact-summary',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: 'https://compact-summary.example.com/vendor',
+          source_type: 'exact_url',
+          trust_tier: 'official',
+        },
+      },
+      { caller: 'host' },
+    );
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(
+          new Response('Stable vendor content for unchanged collection summaries.', {
+            status: 200,
+            headers: { 'content-type': 'text/plain' },
+          }),
+        ),
+      ),
+    );
+
+    await dispatch(
+      {
+        id: 'req-sources-collect-context-compact-summary-first',
+        command: 'market-sources-collect',
+        args: { market_id: marketId },
+      },
+      { caller: 'host' },
+    );
+    await dispatch(
+      {
+        id: 'req-sources-collect-context-compact-summary-second',
+        command: 'market-sources-collect',
+        args: { market_id: marketId },
+      },
+      { caller: 'host' },
+    );
+
+    const context = await dispatch(
+      {
+        id: 'req-crawl-context-compact-summary',
+        command: 'market-sources-crawl-context',
+        args: { market_id: marketId },
+      },
+      { caller: 'host' },
+    );
+
+    expect(context.ok).toBe(true);
+    if (context.ok) {
+      const data = context.data as {
+        recent_runs: Array<{ summary: { unchanged_documents?: unknown; unchanged?: unknown } }>;
+      };
+      const unchangedRun = data.recent_runs.find((run) => run.summary.unchanged_documents === 1);
+      expect(unchangedRun?.summary.unchanged).toEqual({ count: 1, omitted: true });
+    }
+  });
+
   it('continues website crawling from persisted open frontier before returning to source roots', async () => {
     await registerMarketsResource();
 

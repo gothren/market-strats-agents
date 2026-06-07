@@ -1127,6 +1127,18 @@ function parseRunSummary(run: MarketRun): Record<string, unknown> {
   }
 }
 
+function compactRunSummary(summary: Record<string, unknown>): Record<string, unknown> {
+  const compacted: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(summary)) {
+    if (Array.isArray(value)) {
+      compacted[key] = { count: value.length, omitted: true };
+    } else {
+      compacted[key] = value;
+    }
+  }
+  return compacted;
+}
+
 function countsByReason(rows: MarketCrawlUrl[]): Record<string, number> {
   const counts: Record<string, number> = {};
   for (const row of rows) counts[row.reason] = (counts[row.reason] ?? 0) + 1;
@@ -1392,7 +1404,7 @@ register({
         persisted_frontier_available: crawlRows.length > 0,
       },
       sources: sourceSummaries,
-      recent_runs: runs.slice(0, 5).map((run) => ({ run, summary: parseRunSummary(run) })),
+      recent_runs: runs.slice(0, 5).map((run) => ({ run, summary: compactRunSummary(parseRunSummary(run)) })),
       frontier_count: frontier.length,
       frontier_returned: returnedFrontier.length,
       frontier_limit: args.frontier_limit,
