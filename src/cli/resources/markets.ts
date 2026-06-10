@@ -82,6 +82,8 @@ const HELP_CENTER_FETCH_HEADERS = {
 };
 const MIN_CRAWLED_TEXT_LENGTH = 300;
 const DEFAULT_CRAWL_ROW_LIMIT = 25;
+const DEFAULT_CRAWL_MAX_PAGES = 25;
+const DEFAULT_CRAWL_MAX_DEPTH = 2;
 const LOW_VALUE_CRAWL_PATH_FRAGMENTS = [
   '/careers',
   '/jobs',
@@ -1917,8 +1919,8 @@ register({
     stale_days: positiveInt(raw.stale_days ?? raw['stale-days'], 60, 'stale_days'),
     include_skipped: bool(raw.include_skipped ?? raw['include-skipped']),
     skipped_limit: positiveInt(raw.skipped_limit ?? raw['skipped-limit'], DEFAULT_CRAWL_ROW_LIMIT, 'skipped_limit'),
-    max_pages: positiveInt(raw.max_pages ?? raw['max-pages'], 10, 'max_pages'),
-    max_depth: positiveInt(raw.max_depth ?? raw['max-depth'], 1, 'max_depth'),
+    max_pages: positiveInt(raw.max_pages ?? raw['max-pages'], DEFAULT_CRAWL_MAX_PAGES, 'max_pages'),
+    max_depth: positiveInt(raw.max_depth ?? raw['max-depth'], DEFAULT_CRAWL_MAX_DEPTH, 'max_depth'),
   }),
   handler: async (args) => {
     const market = getMarket(args.market_id);

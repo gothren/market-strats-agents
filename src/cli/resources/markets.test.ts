@@ -1352,6 +1352,102 @@ describe('market sources CLI resource', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
+  it('uses useful default website crawl bounds without explicit max pages or depth', async () => {
+    await registerMarketsResource();
+
+    const created = await dispatch(
+      {
+        id: 'req-create-market-default-crawl',
+        command: 'markets-create',
+        args: { name: 'AI Security', description: null },
+      },
+      { caller: 'host' },
+    );
+    expect(created.ok).toBe(true);
+    const marketId = (created as { ok: true; data: { market: { id: string } } }).data.market.id;
+
+    await dispatch(
+      {
+        id: 'req-source-add-default-crawl',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: 'https://vendor.example.com',
+          source_type: 'website',
+          trust_tier: 'official',
+        },
+      },
+      { caller: 'host' },
+    );
+
+    const firstLevelUrls = Array.from({ length: 11 }, (_, index) => `/product-${index + 1}`);
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === 'https://vendor.example.com/') {
+        return new Response(
+          [
+            '<html><head><title>Vendor</title></head><body>',
+            longText(
+              'Vendor homepage links to product pages, platform pages, security pages, integrations, customer evidence, deployment guidance, governance workflows, and AI security capabilities for enterprise teams.',
+            ),
+            ...firstLevelUrls.map((path) => `<a href="${path}">${path}</a>`),
+            '</body></html>',
+          ].join(''),
+          { status: 200, headers: { 'content-type': 'text/html' } },
+        );
+      }
+
+      const firstLevelPath = firstLevelUrls.find((path) => url === `https://vendor.example.com${path}`);
+      if (firstLevelPath) {
+        const deepLink = firstLevelPath === '/product-1' ? '<a href="/product-1/runtime">Runtime</a>' : '';
+        return new Response(
+          `<html><head><title>${firstLevelPath}</title></head><body>${longText(
+            'This product page describes AI security capabilities, runtime controls, policy management, monitoring workflows, deployment architecture, integrations, customer proof points, and operational evidence for security teams.',
+          )}${deepLink}</body></html>`,
+          { status: 200, headers: { 'content-type': 'text/html' } },
+        );
+      }
+
+      if (url === 'https://vendor.example.com/product-1/runtime') {
+        return new Response(
+          `<html><head><title>Runtime</title></head><body>${longText(
+            'Runtime protection documentation explains monitoring, detection, blocking, audit trails, prompt injection defenses, data leakage controls, tool-call inspection, and operational evidence for deployed AI applications.',
+          )}</body></html>`,
+          { status: 200, headers: { 'content-type': 'text/html' } },
+        );
+      }
+
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const collected = await dispatch(
+      {
+        id: 'req-sources-collect-default-crawl',
+        command: 'market-sources-collect',
+        args: { market_id: marketId },
+      },
+      { caller: 'host' },
+    );
+
+    expect(collected.ok).toBe(true);
+    if (collected.ok) {
+      const data = collected.data as {
+        summary: { visited: number; stored_documents: number; skipped: number };
+        stored_documents: Array<{ url: string; metadata_json: string }>;
+        skipped_urls?: Array<{ reason: string }>;
+      };
+      expect(data.summary).toMatchObject({
+        visited: 13,
+        stored_documents: 13,
+        skipped: 0,
+      });
+      expect(data.stored_documents.map((item) => item.url)).toContain('https://vendor.example.com/product-11');
+      expect(data.stored_documents.map((item) => item.url)).toContain('https://vendor.example.com/product-1/runtime');
+      expect(data.skipped_urls ?? []).toEqual([]);
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(13);
+  });
+
   it('persists crawl frontier rows and exposes them through market run inspection', async () => {
     await registerMarketsResource();
 

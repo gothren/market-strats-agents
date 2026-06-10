@@ -245,7 +245,7 @@ Goal:
 
 Context:
 
-- Current crawler support is intentionally conservative: same-origin, HTML-only, default `--max-pages 10`, default `--max-depth 1`, simple link extraction, persisted skipped/frontier rows, and no browser rendering.
+- Current crawler support is intentionally conservative: same-origin, HTML-only, default `--max-pages 25`, default `--max-depth 2`, simple link extraction, persisted skipped/frontier rows, and no browser rendering.
 - Implemented already: low-value path filtering, high-value prioritization, minimum text filtering, crawl URL normalization, persisted frontier/skipped rows, compact bounded crawl output, open frontier dedupe, `market-runs get`, `market-sources crawl-context`, `market-sources collect --continue-frontier`, `--refresh-stale`, and `--refresh-all`.
 - This is enough for early evidence collection but will miss common source shapes such as sitemaps, PDFs, JS-rendered docs, and cross-subdomain docs links.
 
