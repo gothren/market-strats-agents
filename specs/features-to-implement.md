@@ -25,48 +25,22 @@ Context:
 - The next gap is product workflow quality: the agent needs clear instructions for step-by-step operation, next-action options, auto-approval, asking only on doubt, and ad-hoc Q&A.
 - The CLI should remain a context/tool layer. The agent should do the reasoning.
 
-## P1.1 - Manual Workflow Operating Guide In AGENTS.md
+## P1.1 - Source Proposal Auto-Approval Policy Refinement
 
 Goal:
 
-- Give agents a clear manual-mode operating loop from market setup through report generation.
-
-Context:
-
-- Current `AGENTS.md` documents individual commands, but the product needs a cohesive user workflow.
-- After each meaningful action, the agent should summarize and propose next actions.
-
-Implementation notes:
-
-- Add a concise `Manual Market Workflow` section to `AGENTS.md`.
-- Cover the main sequence: setup market, search/propose sources, review/auto-approve proposals, crawl sources, inspect evidence, extract/import candidates, audit/review candidates, generate map/report, answer ad-hoc questions.
-- After each step, instruct the agent to report what changed and offer 2-5 sensible next options.
-- Keep instructions chat-first and non-technical for the user, while preserving exact CLI commands for the agent.
-
-Acceptance:
-
-- A tester agent can start from "let's add a market" and know the next step after each workflow stage.
-- The workflow does not require the user to know CLI command names.
-- The agent clearly distinguishes product operation from code implementation.
-
-## P1.2 - Source Proposal Auto-Approval And Doubt Policy
-
-Goal:
-
-- Let the agent approve/reject obvious source proposals and ask the user only when source judgment is ambiguous.
+- Refine and validate the source proposal auto-approval policy so agents can apply it reliably.
 
 Context:
 
 - Source proposals already support proposed/accepted/rejected states.
-- The missing piece is a documented policy for when the agent can act without user review.
+- `AGENTS.md` now has a first-pass policy, but it needs tester validation, examples, and likely sharper edge-case handling.
 
 Implementation notes:
 
-- Add source proposal policy to `AGENTS.md`.
-- Auto-accept official, clearly in-scope, non-duplicate vendor websites/docs/product pages with explicit source type.
-- Auto-reject clearly out-of-scope, duplicate, low-quality, old/irrelevant, or generic third-party sources.
-- Ask the user when source trust, market fit, privacy/access, source type, or duplication is ambiguous.
-- Require the agent to present a recommendation when asking the user.
+- Test the policy with another agent on real source-search workflows.
+- Add examples for auto-accept, auto-reject, and ask-user cases if testers find ambiguity.
+- Refine guidance around official docs/websites, third-party sources, private/internal sources, duplicates, and adjacent-market pages.
 - Use existing source proposal review commands; do not add new CLI commands for this item unless testing shows current commands are insufficient.
 
 Acceptance:
@@ -75,24 +49,22 @@ Acceptance:
 - Accepted proposals become active sources and rejected proposals remain durable memory.
 - The agent explains why it auto-accepted, auto-rejected, or asked for review.
 
-## P1.3 - Candidate Auto-Approval And Doubt Policy
+## P1.2 - Candidate Auto-Approval Policy Refinement
 
 Goal:
 
-- Let the agent accept obvious extracted candidates and ask the user only about doubtful candidates.
+- Refine and validate the candidate auto-approval policy so agents can accept obvious candidates and ask about doubtful ones.
 
 Context:
 
 - Candidate validation, audit, review, uncertainty, and change detection already exist.
-- The missing piece is operational policy for when accepted state can change without user review.
+- `AGENTS.md` now has a first-pass policy, but it needs tester validation, examples, and likely sharper edge-case handling.
 
 Implementation notes:
 
-- Add candidate review policy to `AGENTS.md`.
-- Auto-accept candidates when validation passes, evidence quotes match, confidence is medium/high, audit has no medium/high findings, uncertainty is absent, identity is clear, and market fit is obvious.
-- Auto-reject candidates when evidence is missing/invalid, market fit is clearly wrong, or duplicates are already accepted.
-- Ask the user when confidence is low, evidence is weak/stale/conflicting/unknown, audit has medium/high findings, identity is ambiguous, or category/boundary judgment is needed.
-- Require review notes that state whether the decision was auto-approved by policy or user-reviewed.
+- Test the policy with another agent on real extraction/review workflows.
+- Add examples for auto-accept, auto-reject, and ask-user cases if testers find ambiguity.
+- Refine guidance around vendor-only evidence, single-evidence candidates, uncertainty, duplicates, category judgment, and review notes.
 
 Acceptance:
 
@@ -100,7 +72,7 @@ Acceptance:
 - Accepted candidates remain evidence-backed.
 - Doubtful candidates are not silently accepted.
 
-## P1.4 - Continuous Market Improvement Workflow
+## P1.3 - Continuous Market Improvement Workflow
 
 Goal:
 
@@ -125,7 +97,7 @@ Acceptance:
 - The agent uses search/crawl/candidate context rather than repeating recent work blindly.
 - The workflow helps improve source coverage, evidence freshness, weak/uncertain candidates, and review backlog.
 
-## P1.5 - Ad-Hoc Market Q&A Guidance
+## P1.4 - Ad-Hoc Market Q&A Guidance
 
 Goal:
 
@@ -150,7 +122,7 @@ Acceptance:
 - The agent does not invent unsupported answers.
 - The agent offers a useful next action when evidence is missing.
 
-## P1.6 - Manual Workflow Tester Script / Scenario
+## P1.5 - Manual Workflow Tester Script / Scenario
 
 Goal:
 

@@ -17,7 +17,168 @@ This repo is a market strategy agent fork based on NanoClaw. Treat this file as 
 - Full test suite: `pnpm test`
 - The full suite may need to run outside sandbox because subprocess-based tests can fail under restricted IPC.
 
-## Market CLI Workflow
+## Primary Product Workflow
+
+The primary product experience is manual, prompt-driven market strategy work. The user talks to an agent; the agent operates the CLI. Do not make the user think in command names unless they explicitly ask.
+
+When the user asks to work on a market, follow this loop:
+
+1. Understand the user's intent and current market state.
+2. Run the smallest useful CLI/context command with `--json`.
+3. Take the product action or prepare the reviewable artifact.
+4. Summarize what changed in plain language.
+5. Offer 2-5 sensible next actions.
+
+After each meaningful step, propose next actions such as:
+
+- search for more sources
+- review source proposals
+- crawl accepted sources
+- inspect collected documents
+- extract companies/problems/capabilities/categories/claims
+- review doubtful candidates
+- generate a market map or report
+- answer an ad-hoc question from stored evidence
+- improve an existing market by finding gaps, stale evidence, weak candidates, or open crawl frontier
+
+Ask the user only for product judgment, missing inputs, or ambiguous decisions. Do not ask the user to choose between CLI commands when the correct command can be inferred from the workflow.
+
+## Manual Market Workflow
+
+Use this as the default operating path for product usage.
+
+### 1. Set Up Or Find The Market
+
+If the user says "add a market", "set up a market", or names a new market, guide setup with the market name, description, inclusions, exclusions, adjacent markets, notes, and seed sources. If a market may already exist, list markets first and confirm whether to reuse it.
+
+After setup, report:
+
+- market id
+- boundary status
+- seed sources added or skipped
+- any assumptions that should be verified
+
+Offer next actions:
+
+- search for official sources
+- crawl seed sources
+- refine market boundaries
+- ask an ad-hoc question
+
+### 2. Search For Sources
+
+If the user asks to find sources, companies, vendors, docs, or improve coverage, use external/web search tools. This repo does not perform web search internally.
+
+Before searching, read market search context and history. Use that context to avoid repeating recent searches and to target gaps. Record each search after it is performed. Convert useful findings into source proposals.
+
+After source discovery, report:
+
+- what you searched
+- useful sources found
+- sources auto-accepted, auto-rejected, or left for review
+- why any user review is needed
+
+Offer next actions:
+
+- accept/reject doubtful proposals
+- crawl accepted sources
+- search another gap
+- inspect current market context
+
+### 3. Crawl Accepted Sources
+
+If the user asks to fetch, crawl, collect evidence, refresh evidence, or improve crawl results, collect from accepted sources. Use crawl context first when prior collection exists.
+
+After collection, report:
+
+- run id
+- stored, unchanged, failed, skipped, and unsupported counts
+- notable crawl diagnostics or frontier/staleness context
+- document ids/titles worth inspecting
+
+Offer next actions:
+
+- inspect documents
+- continue open crawl frontier
+- refresh stale sources
+- search for better sources
+- extract candidates from documents
+
+### 4. Extract And Review Candidates
+
+If the user asks to analyze evidence or extract market data, inspect/search stored documents and create evidence-backed candidate JSON. Validate and import candidates, then audit them.
+
+Auto-accept only low-ambiguity candidates according to the candidate policy below. Ask the user only about doubtful candidates.
+
+After extraction/review, report:
+
+- imported candidate counts by type
+- auto-accepted and auto-rejected counts
+- candidates needing user review and why
+- any uncertainty flags
+
+Offer next actions:
+
+- review doubtful candidates
+- inspect supporting evidence
+- improve weak candidates
+- generate a market map/report
+- search or crawl more evidence
+
+### 5. Generate Market Output
+
+If the user asks for a market overview, map, or report, generate it from accepted candidates. Do not invent facts or relationships not present in accepted candidates.
+
+After reporting, tell the user where the file was written if applicable, summarize key gaps/uncertainties, and offer next actions:
+
+- refine the report
+- improve weak areas
+- answer questions from the report
+- search/crawl more evidence
+
+### 6. Answer Ad-Hoc Questions
+
+If the user asks a question about a market, company, product, capability, problem, category, claim, source, or document, answer from accepted candidates and stored documents first.
+
+Use document search/get, candidate list/get/map, and reports as needed. Cite or reference candidate ids, document ids, titles, or report files where useful. If stored evidence is insufficient, say so and offer to search, crawl, inspect documents, or create candidates.
+
+Keep ad-hoc Q&A read-only unless the user asks to change market state.
+
+## Review And Auto-Approval Policies
+
+### Source Proposals
+
+Auto-accept source proposals when all are true:
+
+- official or clearly trusted source
+- clearly in scope for the market boundary
+- non-duplicate
+- explicit source type such as `website`, `docs`, or `exact_url`
+- no privacy/access ambiguity
+
+Auto-reject source proposals when they are clearly out of scope, duplicate, low-quality, stale/irrelevant third-party commentary, generic directories, marketplaces, or unsupported search-result noise.
+
+Ask the user when source trust, market fit, source type, duplication, privacy/access, or boundary fit is ambiguous. Present your recommendation and reason.
+
+### Candidates
+
+Auto-accept candidates when all are true:
+
+- validation passes
+- evidence quotes match stored documents
+- confidence is `medium` or `high`
+- audit has no medium/high findings
+- uncertainty is absent
+- identity is clear and not a duplicate
+- market fit is obvious
+
+Auto-reject candidates when evidence is missing/invalid, market fit is clearly wrong, or a duplicate is already accepted.
+
+Ask the user when confidence is low, evidence is weak/stale/conflicting/unknown, audit has medium/high findings, identity is ambiguous, or category/boundary judgment is needed. Present your recommendation and reason.
+
+Review notes should say whether the decision was auto-approved by policy or user-reviewed.
+
+## Market CLI Reference
 
 The market workflow is exposed through `ncl`, backed by the host process over `data/ncl.sock`.
 
