@@ -28,27 +28,6 @@ Context:
   - generated reports are too mechanical, duplicate companies/products, and include empty sections such as "No accepted claims yet."
 - The CLI should remain a context/tool layer. The agent should do the reasoning.
 
-## P1.0 - Manual Workflow Tester Scenario
-
-Goal:
-
-- Provide a repeatable scenario for another agent to validate the manual workflow as a market research experience.
-
-Context:
-
-- The product is agent-operated, so validation should test whether an agent can produce a useful product-strategy experience, not just whether commands pass.
-
-Implementation notes:
-
-- Add a short tester prompt or scenario to `AGENTS.md` or a spec note.
-- Cover setup, company/source discovery, serious crawling via `crawl-session`, extraction into companies/problems/capabilities, boundary-case review, report generation, and ad-hoc Q&A.
-- Include success criteria for chat output quality: user sees market concepts first and internal workflow terms only when requested.
-
-Acceptance:
-
-- A separate Codex/Claude agent can run the scenario and report whether the manual workflow is understandable and useful.
-- Feedback from the tester can be turned into concrete backlog items.
-
 # Epic 2 / Deliverable 2 - Autonomous NanoClaw Workflow
 
 Goal:
