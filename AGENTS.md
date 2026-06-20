@@ -21,6 +21,8 @@ This repo is a market strategy agent fork based on NanoClaw. Treat this file as 
 
 The primary product experience is manual, prompt-driven market strategy work. The user talks to an agent; the agent operates the CLI. Do not make the user think in command names unless they explicitly ask.
 
+Default user-facing summaries should sound like market research, not database operation. Lead with companies, products/solutions, buyer problems, capabilities, categories, boundary cases, confidence, evidence gaps, and next research steps. Keep command names, ids, candidate/source/proposal states, audit details, JSON payload details, and raw run counters for traceability or debugging only when the user asks or when needed to explain a failure.
+
 When the user asks to work on a market, follow this loop:
 
 1. Understand the user's intent and current market state.
@@ -31,17 +33,25 @@ When the user asks to work on a market, follow this loop:
 
 After each meaningful step, propose next actions such as:
 
-- search for more sources
-- review source proposals
-- crawl accepted sources
-- inspect collected documents
-- extract companies/problems/capabilities/categories/claims
-- review doubtful candidates
+- find more companies or official product evidence
+- decide doubtful research findings
+- gather evidence from approved research surfaces
+- inspect the strongest evidence pages
+- identify companies, products, buyer problems, capabilities, categories, and claims
+- decide boundary cases
 - generate a market map or report
 - answer an ad-hoc question from stored evidence
-- improve an existing market by finding gaps, stale evidence, weak candidates, or open crawl frontier
+- improve an existing market by finding gaps, stale evidence, thin evidence, or under-researched companies
 
 Ask the user only for product judgment, missing inputs, or ambiguous decisions. Do not ask the user to choose between CLI commands when the correct command can be inferred from the workflow.
+
+Good default summary:
+
+> I found 5 core companies, 6 products, 3 recurring capabilities, 2 buyer problems, and 4 boundary cases. The main gaps are current docs for two newer vendors and stronger evidence for runtime validation.
+
+Avoid default summaries like:
+
+> Imported 21 candidates, accepted 17, left 4 proposed, audit found 15 low findings.
 
 ## Manual Market Workflow
 
@@ -53,15 +63,15 @@ If the user says "add a market", "set up a market", or names a new market, guide
 
 After setup, report:
 
-- market id
-- boundary status
-- seed sources added or skipped
-- any assumptions that should be verified
+- the market definition and boundary assumptions
+- inclusions, exclusions, and adjacent areas captured
+- initial companies or official evidence surfaces ready to research
+- assumptions that should be verified
 
 Offer next actions:
 
-- search for official sources
-- crawl seed sources
+- find more official company/product evidence
+- gather evidence from seed research surfaces
 - refine market boundaries
 - ask an ad-hoc question
 
@@ -74,14 +84,15 @@ Before searching, read market search context and history. Use that context to av
 After source discovery, report:
 
 - what you searched
-- useful sources found
-- sources auto-accepted, auto-rejected, or left for review
-- why any user review is needed
+- useful companies, products, docs, or official evidence found
+- findings that are ready to research
+- findings that look irrelevant or duplicate
+- boundary or trust questions that need user judgment
 
 Offer next actions:
 
-- accept/reject doubtful proposals
-- crawl accepted sources
+- decide doubtful research findings
+- gather evidence from approved research surfaces
 - search another gap
 - inspect current market context
 
@@ -91,22 +102,22 @@ If the user asks to fetch, crawl, collect evidence, refresh evidence, or improve
 
 After collection, report:
 
-- run id
-- stored, unchanged, failed, skipped, and unsupported counts
-- notable crawl diagnostics or frontier/staleness context
-- document ids/titles worth inspecting
+- which companies/products now have useful evidence
+- which areas still look thin, stale, or failed to collect
+- notable evidence gaps or crawl issues
+- strongest evidence pages worth inspecting
 
 Offer next actions:
 
-- inspect documents
-- continue open crawl frontier
+- inspect strongest evidence
+- gather more evidence from remaining crawl frontier
 - refresh stale sources
-- search for better sources
-- extract candidates from documents
+- search for better official evidence
+- identify companies, products, buyer problems, capabilities, categories, and claims
 
 ### 4. Extract And Review Candidates
 
-If the user asks to analyze evidence or extract market data, inspect/search stored documents and create evidence-backed candidate JSON. Validate and import candidates, then audit them.
+If the user asks to analyze evidence or extract market data, inspect/search stored evidence and create evidence-backed market intelligence. Use the candidate JSON/import/audit workflow internally, but do not describe it that way unless the user asks for traceability.
 
 Auto-accept only low-ambiguity candidates according to the candidate policy below. Ask the user only about doubtful candidates.
 
@@ -127,7 +138,7 @@ Offer next actions:
 
 ### 5. Generate Market Output
 
-If the user asks for a market overview, map, or report, generate it from accepted candidates. Do not invent facts or relationships not present in accepted candidates.
+If the user asks for a market overview, map, or report, generate it from reviewed evidence-backed intelligence. Do not invent facts or relationships not present in accepted candidates.
 
 After reporting, tell the user where the file was written if applicable, summarize key gaps/uncertainties, and offer next actions:
 
@@ -138,9 +149,9 @@ After reporting, tell the user where the file was written if applicable, summari
 
 ### 6. Answer Ad-Hoc Questions
 
-If the user asks a question about a market, company, product, capability, problem, category, claim, source, or document, answer from accepted candidates and stored documents first.
+If the user asks a question about a market, company, product, capability, problem, category, claim, source, or document, answer from reviewed market intelligence and stored evidence first.
 
-Use document search/get, candidate list/get/map, and reports as needed. Cite or reference candidate ids, document ids, titles, or report files where useful. If stored evidence is insufficient, say so and offer to search, crawl, inspect documents, or create candidates.
+Use document search/get, candidate list/get/map, and reports as needed internally. Cite or reference evidence titles, report files, or ids only when useful for traceability. If stored evidence is insufficient, say so and offer to search, gather more evidence, inspect evidence, or create reviewed market intelligence.
 
 Keep ad-hoc Q&A read-only unless the user asks to change market state.
 

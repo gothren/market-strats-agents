@@ -28,31 +28,7 @@ Context:
   - generated reports are too mechanical, duplicate companies/products, and include empty sections such as "No accepted claims yet."
 - The CLI should remain a context/tool layer. The agent should do the reasoning.
 
-## P1.0 - Market Research Language Layer
-
-Goal:
-
-- Make all default user-facing summaries use market-research language.
-
-Context:
-
-- Product strategists care about companies, products/solutions, buyer problems, capabilities, market boundaries, confidence, and gaps.
-- Internal concepts such as sources, candidates, extraction runs, proposal states, audit findings, ids, and JSON payloads are useful for agents and debugging, but they should not dominate normal chat output.
-
-Implementation notes:
-
-- Update `AGENTS.md` manual workflow guidance so after each step the agent reports market concepts first.
-- CLI ids, run ids, counts by internal status, and audit internals should be omitted unless the user asks for traceability, debugging, or exact command output.
-- Preferred summaries should look like: "I found 5 core companies, 6 products, 3 recurring capabilities, 2 buyer problems, and 4 boundary cases."
-- Replace "candidate/source/proposal/extraction" wording in default next actions with "companies to research", "evidence gathered", "problems/capabilities found", "boundary cases to decide", and "market report".
-
-Acceptance:
-
-- A tester agent can run setup, crawling, extraction, review, and reporting while keeping normal chat output readable to a product strategist.
-- The user does not need to understand source proposals, market candidates, review states, extraction runs, or audit internals to follow progress.
-- Internal terminology appears only when useful for traceability or when explicitly requested.
-
-## P1.1 - Manual Workflow Tester Scenario
+## P1.0 - Manual Workflow Tester Scenario
 
 Goal:
 
