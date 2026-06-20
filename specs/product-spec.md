@@ -8,6 +8,8 @@ The product is generic across user-defined markets. "AI Security" is an example 
 
 The product must not guess. Durable intelligence should be grounded in stored evidence. When evidence is weak, stale, contradictory, or missing, the agent should expose that uncertainty and ask the user only when judgment is needed.
 
+The primary user experience must feel like market research. User-facing language should default to companies, products/solutions, buyer problems, capabilities, market boundaries, confidence, and gaps. Internal workflow terms such as source proposals, candidates, extraction runs, accepted/proposed states, audit findings, and ids should stay mostly inside the agent/CLI layer unless the user asks for traceability or debugging detail.
+
 ## Operating Modes
 
 The product must support two modes.
@@ -16,7 +18,7 @@ The product must support two modes.
 
 The entire workflow is chat-driven. The user works with Codex, Claude Code, or another coding/automation agent that has the market CLI available.
 
-After each meaningful step, the agent should summarize what happened and propose the next action with clear options, such as search for sources, review proposed sources, crawl accepted sources, extract candidates, review uncertain candidates, generate a report, or ask an ad-hoc question.
+After each meaningful step, the agent should summarize what happened in market-research terms and propose the next action with clear options, such as find more companies, gather more evidence, identify problems and capabilities, review boundary cases, generate a report, or ask an ad-hoc question. The agent may use CLI terminology internally, but normal user-facing summaries should not require the user to understand the data model.
 
 Core manual workflows:
 
@@ -25,11 +27,11 @@ Core manual workflows:
    - The agent captures market name, description, inclusions, exclusions, adjacent markets, notes, and seed sources.
 
 2. Search for market sources.
-   - The user asks the agent to search for sources.
-   - The agent uses external search tools, records search history, and imports findings as source proposals.
+   - The user asks the agent to find companies, vendors, official websites, docs, or evidence.
+   - The agent uses external search tools, records search history, and imports findings into reviewable durable state.
    - The agent should auto-approve or reject low-ambiguity proposals using documented policy.
    - The agent asks the user only when it has doubts.
-   - When user review is needed, the agent presents a recommendation.
+   - When user review is needed, the agent presents a market-fit recommendation, such as core, adjacent, exclude, or needs more evidence.
 
 3. Improve source discovery for an existing market.
    - The user asks the agent to improve prior results.
@@ -37,7 +39,8 @@ Core manual workflows:
 
 4. Crawl market sources.
    - The user asks the agent to crawl accepted sources.
-   - The agent collects evidence from supported source types and reports a concise crawl summary.
+   - The agent runs a serious crawl session by default, collects evidence from supported source types, continues useful frontier within budget, and reports which companies now have useful evidence versus thin coverage.
+   - Low-level bounded collection remains available for targeted tests or debugging, but it is not the default user-facing crawl path.
 
 5. Improve crawling for an existing market.
    - The user asks the agent to crawl again or improve crawl results.
@@ -46,11 +49,11 @@ Core manual workflows:
 6. Extract data from crawled documents.
    - The user asks the agent to extract companies, products, problems, capabilities, categories, and claims.
    - The agent reads stored documents, creates evidence-backed candidates, validates/imports them, audits them, and auto-approves candidates that meet documented policy.
-   - The agent asks the user to review only candidates it has doubts about.
+   - The agent asks the user to review only doubtful market judgments, framed as companies/products/problems/capabilities or boundary cases rather than raw candidate states.
 
 7. Generate a market report.
    - The user asks for a report.
-   - The agent generates JSON overview output or a Markdown report from accepted candidates.
+   - The agent generates JSON overview output or a Markdown strategy report from accepted evidence-backed intelligence.
    - The agent writes requested report files to disk.
 
 8. Answer ad-hoc market questions.
@@ -105,6 +108,7 @@ Core autonomous workflows:
 - Doubt should be explicit and auditable, not hidden in prose.
 - Accepted market intelligence comes from reviewed/accepted candidates, not from live URLs or unsupported inference.
 - Market maps are continuously improvable and should not claim complete coverage.
+- User-facing output should lead with market concepts. Internal state names, ids, run counters, and audit internals should be secondary traceability, not the default conversation.
 
 ## Core Data Flow
 
@@ -161,17 +165,23 @@ Source trust and provenance must remain visible. Official vendor websites/docs a
 
 ## Reports And Ad-Hoc Answers
 
-Reports should be generated from accepted candidates and stored evidence. V1 report formats should include JSON overview output and Markdown files written to disk.
+Reports should be generated from accepted candidates and stored evidence. V1 report formats should include JSON overview output and Markdown files written to disk. Reports should read like strategy artifacts, not database dumps.
 
 Reports should cover:
 
+- executive summary
 - market definition
 - category map
-- companies and products
-- problems and capabilities
-- claims
-- weak, stale, conflicting, or unknown areas
+- core companies researched
+- products and solutions
+- buyer problems
+- solution capability map
+- company-by-capability matrix
+- adjacent or boundary cases
+- weak, stale, conflicting, unknown, or thin-evidence areas
 - evidence appendix
+
+Reports should omit empty placeholder sections. For example, do not include "No accepted claims yet" if there are no claims. Reports should separate companies from products; if a company and product share a name, the report should label them clearly or avoid presenting them as duplicate rows.
 
 Ad-hoc answers should use the same durable state. The agent should answer from accepted candidates and stored documents, cite evidence where possible, and state when evidence is missing or insufficient.
 
