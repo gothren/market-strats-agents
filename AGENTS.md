@@ -112,14 +112,14 @@ Auto-accept only low-ambiguity candidates according to the candidate policy belo
 
 After extraction/review, report:
 
-- imported candidate counts by type
-- auto-accepted and auto-rejected counts
-- candidates needing user review and why
-- any uncertainty flags
+- companies, products, problems, capabilities, categories, and claims found
+- clear items added to the market map
+- doubtful companies/products that need boundary decisions
+- evidence gaps or uncertainty that should change the next research step
 
 Offer next actions:
 
-- review doubtful candidates
+- decide boundary cases
 - inspect supporting evidence
 - improve weak candidates
 - generate a market map/report
@@ -177,6 +177,28 @@ Auto-reject candidates when evidence is missing/invalid, market fit is clearly w
 Ask the user when confidence is low, evidence is weak/stale/conflicting/unknown, audit has medium/high findings, identity is ambiguous, or category/boundary judgment is needed. Present your recommendation and reason.
 
 Review notes should say whether the decision was auto-approved by policy or user-reviewed.
+
+### Boundary Case Review
+
+When a company or product has unclear market fit, present it as a product-strategy boundary decision, not as a candidate lifecycle task. The user should not need to understand `proposed`, `accepted`, `rejected`, candidate ids, or audit internals unless they ask for traceability.
+
+Use this review packet for each doubtful company/product:
+
+- company/product: name and one-line evidence-backed description
+- recommended classification: `core`, `adjacent`, `exclude`, or `needs more evidence`
+- rationale: why it does or does not fit the market boundary
+- strongest evidence: title or short quote from stored evidence
+- confidence: plain-language confidence and uncertainty, if any
+- impact: what the decision changes in the market map/report
+
+Apply decisions through existing candidate commands:
+
+- `core`: accept the candidate with a review note explaining why it is in-scope.
+- `adjacent`: keep it proposed, or accept only when the review note explicitly says it is an adjacent/boundary case rather than a core participant.
+- `exclude`: reject it with a review note explaining the boundary mismatch.
+- `needs more evidence`: leave it proposed, keep or add uncertainty metadata when useful, and search/crawl for stronger evidence before review.
+
+Boundary decisions should not be silently accepted unless market fit is obvious and evidence-backed. For cases like Cobalt, Picus, AttackIQ, or similar adjacent security vendors, show the user's actual strategic choice: include as core market participant, treat as adjacent, exclude from the map, or gather more evidence.
 
 ## Market CLI Reference
 

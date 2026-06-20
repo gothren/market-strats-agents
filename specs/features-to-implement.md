@@ -52,35 +52,7 @@ Acceptance:
 - The user does not need to understand source proposals, market candidates, review states, extraction runs, or audit internals to follow progress.
 - Internal terminology appears only when useful for traceability or when explicitly requested.
 
-## P1.1 - Boundary Case Review UX
-
-Goal:
-
-- Present doubtful market-fit decisions as product strategy review, not lifecycle-state review.
-
-Context:
-
-- Boundary cases such as Cobalt, Picus, and AttackIQ were technically represented as proposed candidates with uncertainty, but that language is not natural for the user.
-- The user needs to decide whether a company/product is core, adjacent, excluded, or needs more evidence.
-
-Implementation notes:
-
-- Refactor source/candidate auto-approval guidance so user-facing review packets show:
-  - company/product.
-  - recommended classification: core, adjacent, exclude, or needs more evidence.
-  - short rationale.
-  - strongest evidence.
-  - what accepting or excluding changes in the market map/report.
-- Keep existing candidate/source review commands; this item is about presentation and workflow unless testing proves command support is insufficient.
-- Boundary decisions should not be silently accepted unless clearly in scope and evidence-backed.
-
-Acceptance:
-
-- A tester agent presents Cobalt, Picus, and AttackIQ-style cases as strategic boundary decisions.
-- The user can decide without understanding proposed/accepted/rejected candidate mechanics.
-- Review outcomes still mutate the underlying source/candidate state correctly.
-
-## P1.2 - Auto-Approval Policy Refinement
+## P1.1 - Auto-Approval Policy Refinement
 
 Goal:
 
@@ -103,7 +75,7 @@ Acceptance:
 - Accepted intelligence remains evidence-backed.
 - Doubtful companies/products/problems/capabilities are not silently accepted.
 
-## P1.3 - Manual Workflow Tester Scenario
+## P1.2 - Manual Workflow Tester Scenario
 
 Goal:
 
