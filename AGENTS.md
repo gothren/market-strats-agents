@@ -751,8 +751,31 @@ pnpm ncl market-candidates report --market-id <MARKET_ID> --json
 pnpm ncl market-candidates report --market-id <MARKET_ID> --output-file /private/tmp/<market>-report.md --json
 ```
 
-The report is read-only and uses accepted candidates only. It includes market definition, category map, company/product table, problems, capabilities, claims, known gaps, and an evidence appendix. The v1 problem-to-solution section does not infer relationships that were not reviewed.
-Accepted candidate uncertainty appears in the report so weak, stale, conflicting, or unknown intelligence stays visible.
+The report command is read-only and uses accepted candidates only. It creates a strategy-grade scaffold with market definition, companies, products/solutions, buyer problems, capabilities, relationship matrix when available, evidence confidence/gaps, and an evidence appendix. It omits empty sections instead of printing placeholder text.
+
+The agent authors the final strategy narrative in the same Markdown file. Do not create a separate narrative report. Use the generated report as the evidence-backed scaffold, then edit/expand that file with concise product-strategy prose grounded in accepted candidates and stored evidence.
+
+Before writing relationship-heavy report sections, persist durable company/product-to-capability judgments as accepted `claim` candidates. Use relationship metadata like:
+
+```json
+{
+  "candidate_type": "claim",
+  "name": "Example Vendor provides runtime monitoring",
+  "summary": "Example Vendor is associated with runtime monitoring capability.",
+  "confidence": "medium",
+  "evidence": [{ "document_id": "mdoc_...", "quote": "...", "note": "Relationship evidence" }],
+  "metadata": {
+    "relationship": {
+      "type": "company_capability",
+      "subject_candidate_id": "mcand_company_or_product",
+      "object_candidate_id": "mcand_capability",
+      "label": "Provides runtime monitoring"
+    }
+  }
+}
+```
+
+Then validate/import/review those claims before regenerating the report. The company-capability matrix is built only from accepted relationship claims; do not imply relationships in the matrix that were not persisted and accepted. Accepted candidate uncertainty appears in the report so weak, stale, conflicting, or unknown intelligence stays visible.
 
 Suggested review notes:
 
@@ -761,12 +784,13 @@ Suggested review notes:
 - Vendor claims: `Accepted by user review as vendor-reported claim; not independently verified.`
 - Broad platforms: `Accepted by user review: product includes in-scope capability; <adjacent feature> is adjacent to the market boundary.`
 
-Report:
+Report to the user in market-research terms:
 
-- extraction run id
-- candidate counts by type
-- confidence distribution
-- candidates that need user review
+- core companies and products covered
+- main buyer problems and capabilities identified
+- important company-capability relationships persisted
+- boundary cases, weak evidence, or gaps
+- report file path when written
 
 Do not create accepted facts directly from documents. Imported extraction output starts as reviewable candidates.
 

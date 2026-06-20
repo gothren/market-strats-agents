@@ -2658,25 +2658,33 @@ function candidateEvidence(candidate: MarketCandidate): MarketCandidateEvidence[
   return JSON.parse(candidate.evidence_json) as MarketCandidateEvidence[];
 }
 
-function markdownCandidateTable(candidates: MarketCandidate[], emptyMessage: string): string[] {
-  if (candidates.length === 0) return [emptyMessage];
+function candidateReportName(candidate: MarketCandidate, allCandidates: MarketCandidate[]): string {
+  const sameNameDifferentType = allCandidates.some(
+    (item) =>
+      item.id !== candidate.id &&
+      item.candidate_type !== candidate.candidate_type &&
+      normalizedCandidateName(item.name) === normalizedCandidateName(candidate.name),
+  );
+  return sameNameDifferentType ? `${candidate.name} (${candidate.candidate_type})` : candidate.name;
+}
 
+function markdownCandidateTable(candidates: MarketCandidate[], allCandidates: MarketCandidate[]): string[] {
   return [
-    '| Name | Summary | Confidence | Candidate ID |',
-    '| --- | --- | --- | --- |',
+    '| Name | Summary | Confidence |',
+    '| --- | --- | --- |',
     ...candidates.map(
       (candidate) =>
-        `| ${markdownTableCell(candidate.name)} | ${markdownTableCell(candidate.summary)} | ${candidate.confidence} | ${candidate.id} |`,
+        `| ${markdownTableCell(candidateReportName(candidate, allCandidates))} | ${markdownTableCell(candidate.summary)} | ${candidate.confidence} |`,
     ),
   ];
 }
 
-function markdownCandidateBullets(candidates: MarketCandidate[], emptyMessage: string): string[] {
-  if (candidates.length === 0) return [emptyMessage];
-
+function markdownCandidateBullets(candidates: MarketCandidate[], allCandidates: MarketCandidate[]): string[] {
   return candidates.map(
     (candidate) =>
-      `- ${candidate.name} (${candidate.confidence}, ${candidate.id}): ${candidate.summary?.trim() || 'No summary.'}`,
+      `- ${candidateReportName(candidate, allCandidates)} (${candidate.confidence}): ${
+        candidate.summary?.trim() || 'No summary.'
+      }`,
   );
 }
 
@@ -2687,14 +2695,100 @@ function markdownUncertaintyBullets(candidates: MarketCandidate[]): string[] {
       (item): item is { candidate: MarketCandidate; uncertainty: CandidateUncertainty } => item.uncertainty !== null,
     );
 
-  if (uncertain.length === 0) return ['No accepted candidate uncertainty flags.'];
-
   return uncertain.map(({ candidate, uncertainty }) => {
     const reasons =
       uncertainty.reasons && uncertainty.reasons.length > 0 ? ` Reasons: ${uncertainty.reasons.join(', ')}.` : '';
     const note = uncertainty.note?.trim() || 'No note provided.';
     return `- ${candidate.name} (${uncertainty.status}): ${note}${reasons}`;
   });
+}
+
+function reportSection(lines: string[], title: string, content: string[]): void {
+  if (content.length === 0) return;
+  lines.push('');
+  lines.push(`## ${title}`);
+  lines.push(...content);
+}
+
+function reportCandidateCounts(input: {
+  companies: MarketCandidate[];
+  products: MarketCandidate[];
+  problems: MarketCandidate[];
+  capabilities: MarketCandidate[];
+  categories: MarketCandidate[];
+  claims: MarketCandidate[];
+}): string {
+  return [
+    `${input.companies.length} companies`,
+    `${input.products.length} products/solutions`,
+    `${input.problems.length} buyer problems`,
+    `${input.capabilities.length} capabilities`,
+    `${input.categories.length} categories`,
+    `${input.claims.length} evidence-backed claims`,
+  ].join(', ');
+}
+
+function relationshipMatrixRows(candidates: MarketCandidate[]): string[] {
+  const byId = new Map(candidates.map((candidate) => [candidate.id, candidate]));
+  const rows = candidates
+    .filter((candidate) => candidate.candidate_type === 'claim')
+    .map((claim) => ({ claim, relationship: candidateRelationship(claim) }))
+    .filter(
+      (item): item is { claim: MarketCandidate; relationship: CandidateRelationship } => item.relationship !== null,
+    )
+    .map(({ claim, relationship }) => {
+      const subject = byId.get(relationship.subject_candidate_id);
+      const object = byId.get(relationship.object_candidate_id);
+      if (!subject || !object) return null;
+      if (!['company', 'product'].includes(subject.candidate_type) || object.candidate_type !== 'capability') {
+        return null;
+      }
+      return {
+        subject,
+        object,
+        label: relationship.label ?? claim.name,
+        claim,
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => item !== null)
+    .sort((a, b) =>
+      `${a.subject.name}:${a.object.name}:${a.label}`.localeCompare(`${b.subject.name}:${b.object.name}:${b.label}`),
+    );
+
+  if (rows.length === 0) return [];
+  return [
+    '| Company / Product | Capability | Relationship | Evidence Claim |',
+    '| --- | --- | --- | --- |',
+    ...rows.map(
+      (row) =>
+        `| ${markdownTableCell(candidateReportName(row.subject, candidates))} | ${markdownTableCell(
+          candidateReportName(row.object, candidates),
+        )} | ${markdownTableCell(row.label)} | ${markdownTableCell(row.claim.name)} |`,
+    ),
+  ];
+}
+
+function reportGapBullets(input: {
+  candidates: MarketCandidate[];
+  companies: MarketCandidate[];
+  products: MarketCandidate[];
+  problems: MarketCandidate[];
+  capabilities: MarketCandidate[];
+  categories: MarketCandidate[];
+  claims: MarketCandidate[];
+}): string[] {
+  const gaps: string[] = [];
+  if (input.candidates.length === 0) gaps.push('- No accepted market intelligence has been reviewed yet.');
+  if (input.companies.length === 0) gaps.push('- No core companies have been accepted yet.');
+  if (input.products.length === 0) gaps.push('- No products or solutions have been accepted yet.');
+  if (input.problems.length === 0) gaps.push('- No buyer problems have been accepted yet.');
+  if (input.capabilities.length === 0) gaps.push('- No solution capabilities have been accepted yet.');
+  if (input.categories.length === 0) gaps.push('- No market categories have been accepted yet.');
+  const uncertain = markdownUncertaintyBullets(input.candidates);
+  if (uncertain.length > 0) {
+    gaps.push(...uncertain);
+  }
+  return gaps;
 }
 
 function renderMarketCandidateReport(input: {
@@ -2711,52 +2805,41 @@ function renderMarketCandidateReport(input: {
   const lines: string[] = [];
 
   lines.push(`# Market Report: ${input.market.name}`);
+  reportSection(lines, 'Executive Summary', [
+    `This report summarizes accepted, evidence-backed market intelligence for ${input.market.name}.`,
+    `Current accepted coverage: ${reportCandidateCounts({ companies, products, problems, capabilities, categories, claims })}.`,
+    'The agent should replace or expand this summary with strategy narrative grounded in the sections and evidence appendix below.',
+  ]);
   lines.push('');
   lines.push('## Market Definition');
   lines.push(`- Description: ${input.market.description?.trim() || 'Not specified.'}`);
   lines.push(`- Inclusions: ${boundary?.inclusions?.trim() || 'Not specified.'}`);
   lines.push(`- Exclusions: ${boundary?.exclusions?.trim() || 'Not specified.'}`);
   lines.push(`- Adjacent markets: ${boundary?.adjacent_markets?.trim() || 'Not specified.'}`);
-  lines.push('');
-  lines.push('## Category Map');
-  lines.push(...markdownCandidateBullets(categories, 'No accepted categories yet.'));
-  lines.push('');
-  lines.push('## Companies And Products');
-  lines.push(...markdownCandidateTable([...companies, ...products], 'No accepted companies or products yet.'));
-  lines.push('');
-  lines.push('## Problem-To-Solution Map');
-  lines.push('No reviewed problem-to-solution relationships are inferred in v1.');
-  lines.push('');
-  lines.push('### Problems');
-  lines.push(...markdownCandidateBullets(problems, 'No accepted problems yet.'));
-  lines.push('');
-  lines.push('### Capabilities');
-  lines.push(...markdownCandidateBullets(capabilities, 'No accepted capabilities yet.'));
-  lines.push('');
-  lines.push('## Evidence-Backed Claims');
-  lines.push(...markdownCandidateBullets(claims, 'No accepted claims yet.'));
-  lines.push('');
-  lines.push('## Known Gaps');
-  if (input.candidates.length === 0) {
-    lines.push('- No accepted candidates yet.');
-  } else {
-    if (companies.length === 0) lines.push('- No accepted companies yet.');
-    if (products.length === 0) lines.push('- No accepted products yet.');
-    if (problems.length === 0) lines.push('- No accepted problems yet.');
-    if (capabilities.length === 0) lines.push('- No accepted capabilities yet.');
-    if (categories.length === 0) lines.push('- No accepted categories yet.');
-    if (claims.length === 0) lines.push('- No accepted claims yet.');
-    if ([companies, products, problems, capabilities, categories, claims].every((group) => group.length > 0)) {
-      lines.push('- No structural gaps detected from accepted candidate types.');
-    }
-  }
-  lines.push('');
-  lines.push('## Uncertainty');
-  lines.push(...markdownUncertaintyBullets(input.candidates));
+
+  reportSection(lines, 'Market Categories', markdownCandidateBullets(categories, input.candidates));
+  reportSection(lines, 'Core Companies Researched', markdownCandidateTable(companies, input.candidates));
+  reportSection(lines, 'Products / Solutions', markdownCandidateTable(products, input.candidates));
+  reportSection(lines, 'Buyer Problems', markdownCandidateBullets(problems, input.candidates));
+  reportSection(lines, 'Solution Capabilities', markdownCandidateBullets(capabilities, input.candidates));
+  reportSection(lines, 'Company-Capability Matrix', relationshipMatrixRows(input.candidates));
+  reportSection(
+    lines,
+    'Evidence-Backed Claims',
+    markdownCandidateBullets(
+      claims.filter((claim) => candidateRelationship(claim) === null),
+      input.candidates,
+    ),
+  );
+  reportSection(
+    lines,
+    'Evidence Confidence And Gaps',
+    reportGapBullets({ candidates: input.candidates, companies, products, problems, capabilities, categories, claims }),
+  );
   lines.push('');
   lines.push('## Evidence Appendix');
   if (input.candidates.length === 0) {
-    lines.push('No accepted candidate evidence yet.');
+    lines.push('No accepted evidence yet.');
   } else {
     for (const candidate of input.candidates) {
       for (const evidence of candidateEvidence(candidate)) {
@@ -2810,6 +2893,15 @@ type CandidateUncertainty = {
   marked_at?: string;
 };
 
+const CANDIDATE_RELATIONSHIP_TYPES = ['company_capability'] as const;
+type CandidateRelationshipType = (typeof CANDIDATE_RELATIONSHIP_TYPES)[number];
+type CandidateRelationship = {
+  type: CandidateRelationshipType;
+  subject_candidate_id: string;
+  object_candidate_id: string;
+  label?: string;
+};
+
 function stringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const strings = value.filter((item): item is string => typeof item === 'string' && item.trim() !== '');
@@ -2842,6 +2934,28 @@ function candidateUncertainty(candidate: MarketCandidate): CandidateUncertainty 
 
 function uncertaintyStatusForCandidate(candidate: MarketCandidate): CandidateUncertaintyStatus | null {
   return candidateUncertainty(candidate)?.status ?? null;
+}
+
+function candidateRelationship(candidate: MarketCandidate): CandidateRelationship | null {
+  const metadata = parsedCandidateMetadata(candidate);
+  const raw = metadata?.relationship;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  if (
+    record.type !== 'company_capability' ||
+    typeof record.subject_candidate_id !== 'string' ||
+    record.subject_candidate_id.trim() === '' ||
+    typeof record.object_candidate_id !== 'string' ||
+    record.object_candidate_id.trim() === ''
+  ) {
+    return null;
+  }
+  return {
+    type: 'company_capability',
+    subject_candidate_id: record.subject_candidate_id.trim(),
+    object_candidate_id: record.object_candidate_id.trim(),
+    ...(typeof record.label === 'string' && record.label.trim() !== '' ? { label: record.label.trim() } : {}),
+  };
 }
 
 function candidateStableKey(candidate: MarketCandidate): string | null {
@@ -3305,50 +3419,164 @@ function candidateValidationError(
   };
 }
 
-function validateCandidateMetadata(candidate: CandidatePayloadItem, index: number): CandidateValidationError[] {
+function validateCandidateRelationshipMetadata(
+  marketId: string,
+  candidate: CandidatePayloadItem,
+  index: number,
+  metadata: Record<string, unknown>,
+): CandidateValidationError[] {
+  if (metadata.relationship === undefined || metadata.relationship === null) return [];
+  if (candidate.candidate_type !== 'claim') {
+    return [
+      candidateValidationError(
+        candidate,
+        index,
+        'candidate relationship metadata is only supported on claim candidates',
+      ),
+    ];
+  }
+  if (typeof metadata.relationship !== 'object' || Array.isArray(metadata.relationship)) {
+    return [
+      candidateValidationError(candidate, index, 'candidate metadata.relationship must be an object when provided'),
+    ];
+  }
+
+  const relationship = metadata.relationship as Record<string, unknown>;
+  const errors: CandidateValidationError[] = [];
+  if (
+    typeof relationship.type !== 'string' ||
+    !CANDIDATE_RELATIONSHIP_TYPES.includes(relationship.type as CandidateRelationshipType)
+  ) {
+    errors.push(
+      candidateValidationError(
+        candidate,
+        index,
+        `candidate metadata.relationship.type must be one of: ${CANDIDATE_RELATIONSHIP_TYPES.join(', ')}`,
+      ),
+    );
+  }
+
+  const subjectId = relationship.subject_candidate_id;
+  const objectId = relationship.object_candidate_id;
+  if (typeof subjectId !== 'string' || subjectId.trim() === '') {
+    errors.push(
+      candidateValidationError(
+        candidate,
+        index,
+        'candidate metadata.relationship.subject_candidate_id must be a string',
+      ),
+    );
+  }
+  if (typeof objectId !== 'string' || objectId.trim() === '') {
+    errors.push(
+      candidateValidationError(
+        candidate,
+        index,
+        'candidate metadata.relationship.object_candidate_id must be a string',
+      ),
+    );
+  }
+  if (relationship.label !== undefined && typeof relationship.label !== 'string') {
+    errors.push(candidateValidationError(candidate, index, 'candidate metadata.relationship.label must be a string'));
+  }
+  if (errors.length > 0) return errors;
+
+  const subject = getMarketCandidate((subjectId as string).trim());
+  if (!subject || subject.market_id !== marketId) {
+    errors.push(
+      candidateValidationError(
+        candidate,
+        index,
+        `candidate metadata.relationship.subject_candidate_id must reference a candidate in this market: ${subjectId}`,
+      ),
+    );
+  } else if (!['company', 'product'].includes(subject.candidate_type)) {
+    errors.push(
+      candidateValidationError(
+        candidate,
+        index,
+        'candidate metadata.relationship.subject_candidate_id must reference a company or product candidate',
+      ),
+    );
+  }
+
+  const object = getMarketCandidate((objectId as string).trim());
+  if (!object || object.market_id !== marketId) {
+    errors.push(
+      candidateValidationError(
+        candidate,
+        index,
+        `candidate metadata.relationship.object_candidate_id must reference a candidate in this market: ${objectId}`,
+      ),
+    );
+  } else if (object.candidate_type !== 'capability') {
+    errors.push(
+      candidateValidationError(
+        candidate,
+        index,
+        'candidate metadata.relationship.object_candidate_id must reference a capability candidate',
+      ),
+    );
+  }
+
+  return errors;
+}
+
+function validateCandidateMetadata(
+  marketId: string,
+  candidate: CandidatePayloadItem,
+  index: number,
+): CandidateValidationError[] {
   if (candidate.metadata === null || candidate.metadata === undefined) return [];
   if (typeof candidate.metadata !== 'object' || Array.isArray(candidate.metadata)) {
     return [candidateValidationError(candidate, index, 'candidate metadata must be an object when provided')];
   }
 
   const metadata = candidate.metadata as Record<string, unknown>;
-  if (metadata.uncertainty === undefined || metadata.uncertainty === null) return [];
-  if (typeof metadata.uncertainty !== 'object' || Array.isArray(metadata.uncertainty)) {
-    return [
-      candidateValidationError(candidate, index, 'candidate metadata.uncertainty must be an object when provided'),
-    ];
-  }
-
-  const uncertainty = metadata.uncertainty as Record<string, unknown>;
-  if (
-    typeof uncertainty.status !== 'string' ||
-    !CANDIDATE_UNCERTAINTY_STATUSES.includes(uncertainty.status as CandidateUncertaintyStatus)
-  ) {
-    return [
-      candidateValidationError(
-        candidate,
-        index,
-        `candidate metadata.uncertainty.status must be one of: ${CANDIDATE_UNCERTAINTY_STATUSES.join(', ')}`,
-      ),
-    ];
-  }
-
   const errors: CandidateValidationError[] = [];
-  for (const key of ['reasons', 'conflicts_with'] as const) {
-    const value = uncertainty[key];
-    if (value !== undefined && (!Array.isArray(value) || value.some((item) => typeof item !== 'string'))) {
+  if (metadata.uncertainty !== undefined && metadata.uncertainty !== null) {
+    if (typeof metadata.uncertainty !== 'object' || Array.isArray(metadata.uncertainty)) {
       errors.push(
-        candidateValidationError(candidate, index, `candidate metadata.uncertainty.${key} must be an array of strings`),
+        candidateValidationError(candidate, index, 'candidate metadata.uncertainty must be an object when provided'),
       );
+    } else {
+      const uncertainty = metadata.uncertainty as Record<string, unknown>;
+      if (
+        typeof uncertainty.status !== 'string' ||
+        !CANDIDATE_UNCERTAINTY_STATUSES.includes(uncertainty.status as CandidateUncertaintyStatus)
+      ) {
+        errors.push(
+          candidateValidationError(
+            candidate,
+            index,
+            `candidate metadata.uncertainty.status must be one of: ${CANDIDATE_UNCERTAINTY_STATUSES.join(', ')}`,
+          ),
+        );
+      }
+
+      for (const key of ['reasons', 'conflicts_with'] as const) {
+        const value = uncertainty[key];
+        if (value !== undefined && (!Array.isArray(value) || value.some((item) => typeof item !== 'string'))) {
+          errors.push(
+            candidateValidationError(
+              candidate,
+              index,
+              `candidate metadata.uncertainty.${key} must be an array of strings`,
+            ),
+          );
+        }
+      }
+      for (const key of ['note', 'marked_by', 'marked_at'] as const) {
+        const value = uncertainty[key];
+        if (value !== undefined && typeof value !== 'string') {
+          errors.push(
+            candidateValidationError(candidate, index, `candidate metadata.uncertainty.${key} must be a string`),
+          );
+        }
+      }
     }
   }
-  for (const key of ['note', 'marked_by', 'marked_at'] as const) {
-    const value = uncertainty[key];
-    if (value !== undefined && typeof value !== 'string') {
-      errors.push(candidateValidationError(candidate, index, `candidate metadata.uncertainty.${key} must be a string`));
-    }
-  }
-  return errors;
+  return [...errors, ...validateCandidateRelationshipMetadata(marketId, candidate, index, metadata)];
 }
 
 function validateCandidateEvidence(
@@ -3387,7 +3615,10 @@ function validateCandidatePayload(
   candidate: CandidatePayloadItem,
   index: number,
 ): CandidateValidationError[] {
-  return [...validateCandidateMetadata(candidate, index), ...validateCandidateEvidence(marketId, candidate, index)];
+  return [
+    ...validateCandidateMetadata(marketId, candidate, index),
+    ...validateCandidateEvidence(marketId, candidate, index),
+  ];
 }
 
 register({

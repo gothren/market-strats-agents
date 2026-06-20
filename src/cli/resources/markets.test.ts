@@ -4500,6 +4500,152 @@ describe('market candidates CLI resource', () => {
     }
   });
 
+  it('validates candidate relationship claim metadata', async () => {
+    const { marketId, documentId } = await createDocumentFixture();
+    const basePayload = writePayload({
+      candidates: [
+        {
+          candidate_type: 'company',
+          name: 'Example Vendor',
+          summary: 'Builds AI security tooling.',
+          confidence: 'high',
+          evidence: [{ document_id: documentId, quote: 'Vendor protects', note: 'Company evidence' }],
+        },
+        {
+          candidate_type: 'capability',
+          name: 'Runtime monitoring',
+          summary: 'Monitors AI applications at runtime.',
+          confidence: 'high',
+          evidence: [{ document_id: documentId, quote: 'protects AI applications', note: 'Capability evidence' }],
+        },
+      ],
+    });
+
+    const imported = await dispatch(
+      {
+        id: 'req-candidates-import-relationship-base',
+        command: 'market-candidates-import',
+        args: { market_id: marketId, 'payload-file': basePayload },
+      },
+      { caller: 'host' },
+    );
+    expect(imported.ok).toBe(true);
+    const candidates = (imported as { ok: true; data: { candidates: Array<{ id: string; name: string }> } }).data
+      .candidates;
+    const companyId = candidates.find((candidate) => candidate.name === 'Example Vendor')!.id;
+    const capabilityId = candidates.find((candidate) => candidate.name === 'Runtime monitoring')!.id;
+
+    const valid = await dispatch(
+      {
+        id: 'req-candidates-validate-relationship-valid',
+        command: 'market-candidates-validate',
+        args: {
+          market_id: marketId,
+          'payload-file': writePayload({
+            candidates: [
+              {
+                candidate_type: 'claim',
+                name: 'Example Vendor provides runtime monitoring',
+                summary: 'Example Vendor is associated with runtime monitoring capability.',
+                confidence: 'medium',
+                evidence: [
+                  { document_id: documentId, quote: 'protects AI applications', note: 'Relationship evidence' },
+                ],
+                metadata: {
+                  relationship: {
+                    type: 'company_capability',
+                    subject_candidate_id: companyId,
+                    object_candidate_id: capabilityId,
+                    label: 'Provides runtime monitoring',
+                  },
+                },
+              },
+            ],
+          }),
+        },
+      },
+      { caller: 'host' },
+    );
+
+    expect(valid.ok).toBe(true);
+    if (valid.ok) {
+      expect(valid.data).toMatchObject({
+        valid: true,
+        summary: { total: 1, importable: 1, error_count: 0 },
+        errors: [],
+      });
+    }
+
+    const invalid = await dispatch(
+      {
+        id: 'req-candidates-validate-relationship-invalid',
+        command: 'market-candidates-validate',
+        args: {
+          market_id: marketId,
+          'payload-file': writePayload({
+            candidates: [
+              {
+                candidate_type: 'capability',
+                name: 'Invalid relationship owner',
+                summary: 'Relationship metadata must belong to a claim.',
+                confidence: 'medium',
+                evidence: [{ document_id: documentId, quote: 'protects AI applications', note: null }],
+                metadata: {
+                  relationship: {
+                    type: 'company_capability',
+                    subject_candidate_id: companyId,
+                    object_candidate_id: capabilityId,
+                  },
+                },
+              },
+              {
+                candidate_type: 'claim',
+                name: 'Invalid relationship type',
+                summary: 'Relationship metadata type is unsupported.',
+                confidence: 'medium',
+                evidence: [{ document_id: documentId, quote: 'Vendor protects', note: null }],
+                metadata: {
+                  relationship: {
+                    type: 'maybe_related',
+                    subject_candidate_id: companyId,
+                    object_candidate_id: capabilityId,
+                  },
+                },
+              },
+              {
+                candidate_type: 'claim',
+                name: 'Missing relationship target',
+                summary: 'Relationship metadata target is missing.',
+                confidence: 'medium',
+                evidence: [{ document_id: documentId, quote: 'Vendor protects', note: null }],
+                metadata: {
+                  relationship: {
+                    type: 'company_capability',
+                    subject_candidate_id: companyId,
+                  },
+                },
+              },
+            ],
+          }),
+        },
+      },
+      { caller: 'host' },
+    );
+
+    expect(invalid.ok).toBe(true);
+    if (invalid.ok) {
+      expect(invalid.data).toMatchObject({
+        valid: false,
+        summary: { total: 3, importable: 0, error_count: 3 },
+        errors: [
+          { index: 0, message: expect.stringContaining('relationship metadata is only supported on claim candidates') },
+          { index: 1, message: expect.stringContaining('metadata.relationship.type must be one of') },
+          { index: 2, message: expect.stringContaining('metadata.relationship.object_candidate_id') },
+        ],
+      });
+    }
+  });
+
   it('rejects candidate import when evidence is missing', async () => {
     const { marketId } = await createDocumentFixture();
     const payloadFile = writePayload({
@@ -6039,7 +6185,7 @@ describe('market candidates CLI resource', () => {
         },
         {
           candidate_type: 'product',
-          name: 'Example Scanner',
+          name: 'Example Vendor',
           summary: 'Scans repositories for vulnerable code.',
           confidence: 'medium',
           evidence: [{ document_id: documentId, quote: 'protects AI applications', note: null }],
@@ -6104,6 +6250,7 @@ describe('market candidates CLI resource', () => {
       .filter((candidate) => candidate.name !== 'Unreviewed claim')
       .map((candidate) => candidate.id);
     const companyId = candidates.find((candidate) => candidate.name === 'Example Vendor')!.id;
+    const capabilityId = candidates.find((candidate) => candidate.name === 'Prompt injection detection')!.id;
 
     const accepted = await dispatch(
       {
@@ -6118,6 +6265,53 @@ describe('market candidates CLI resource', () => {
       { caller: 'host' },
     );
     expect(accepted.ok).toBe(true);
+
+    const relationshipPayload = writePayload({
+      candidates: [
+        {
+          candidate_type: 'claim',
+          name: 'Example Vendor provides prompt injection detection',
+          summary: 'Example Vendor is associated with prompt injection detection capability.',
+          confidence: 'medium',
+          evidence: [{ document_id: documentId, quote: 'prompt injection', note: 'Relationship evidence' }],
+          metadata: {
+            relationship: {
+              type: 'company_capability',
+              subject_candidate_id: companyId,
+              object_candidate_id: capabilityId,
+              label: 'Provides prompt injection detection',
+            },
+          },
+        },
+      ],
+    });
+
+    const importedRelationship = await dispatch(
+      {
+        id: 'req-candidates-import-report-relationship',
+        command: 'market-candidates-import',
+        args: { market_id: marketId, 'payload-file': relationshipPayload },
+      },
+      { caller: 'host' },
+    );
+    expect(importedRelationship.ok).toBe(true);
+    const relationshipId = (
+      importedRelationship as { ok: true; data: { candidates: Array<{ id: string; name: string }> } }
+    ).data.candidates[0].id;
+
+    const acceptedRelationship = await dispatch(
+      {
+        id: 'req-candidates-review-report-relationship',
+        command: 'market-candidates-review',
+        args: {
+          id: relationshipId,
+          status: 'accepted',
+          'review-note': 'Accepted as an evidence-backed relationship for market report.',
+        },
+      },
+      { caller: 'host' },
+    );
+    expect(acceptedRelationship.ok).toBe(true);
 
     const reported = await dispatch(
       {
@@ -6143,14 +6337,14 @@ describe('market candidates CLI resource', () => {
         format: 'markdown',
         output_file: null,
         summary: {
-          total: 6,
+          total: 7,
           by_type: {
             company: 1,
             product: 1,
             problem: 1,
             capability: 1,
             category: 1,
-            claim: 1,
+            claim: 2,
           },
         },
         next_actions: expect.arrayContaining([
@@ -6159,15 +6353,27 @@ describe('market candidates CLI resource', () => {
         ]),
       });
       expect(data.markdown).toContain('# Market Report: AI Security');
-      expect(data.markdown).toContain('## Category Map');
-      expect(data.markdown).toContain('| Example Vendor | Builds code security tooling. | high |');
-      expect(data.markdown).toContain('## Problem-To-Solution Map');
-      expect(data.markdown).toContain('No reviewed problem-to-solution relationships are inferred in v1.');
-      expect(data.markdown).toContain('## Uncertainty');
+      expect(data.markdown).toContain('## Executive Summary');
+      expect(data.markdown).toContain('## Core Companies Researched');
+      expect(data.markdown).toContain('| Example Vendor (company) | Builds code security tooling. | high |');
+      expect(data.markdown).toContain('## Products / Solutions');
+      expect(data.markdown).toContain(
+        '| Example Vendor (product) | Scans repositories for vulnerable code. | medium |',
+      );
+      expect(data.markdown).toContain('## Buyer Problems');
+      expect(data.markdown).toContain('## Solution Capabilities');
+      expect(data.markdown).toContain('## Company-Capability Matrix');
+      expect(data.markdown).toContain(
+        '| Example Vendor (company) | Prompt injection detection | Provides prompt injection detection |',
+      );
+      expect(data.markdown).toContain('## Evidence Confidence And Gaps');
       expect(data.markdown).toContain(
         '- Vendor-reported runtime protection (weak_evidence): Accepted as vendor-reported but not independently verified.',
       );
       expect(data.markdown).toContain(`- ${companyId} / ${documentId}: "Vendor protects"`);
+      expect(data.markdown).toContain(`- ${relationshipId} / ${documentId}: "prompt injection"`);
+      expect(data.markdown).not.toContain('No accepted claims yet');
+      expect(data.markdown).not.toContain('## Problem-To-Solution Map');
       expect(data.markdown).not.toContain('Unreviewed claim');
     }
   });
