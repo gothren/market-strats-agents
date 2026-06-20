@@ -18,6 +18,7 @@ Core implementation principles:
 - Store reviewable `market_candidates` as the source of truth for accepted intelligence.
 - Compute market overview and reports from accepted candidates; do not add durable facts or market-map tables yet.
 - Keep source collection bounded, auditable, and explicit about unsupported source types.
+- Keep user-facing summaries market-research oriented. CLI/data-model terms such as source proposals, candidates, accepted/proposed states, run ids, and audit findings are implementation details unless the user asks for traceability.
 
 ## Architecture Roles
 
@@ -48,7 +49,7 @@ The agent should:
 - write source proposal and candidate payloads.
 - decide low-ambiguity auto-approval according to documented policy.
 - ask the user only when it has doubts.
-- record searches and summarize actions.
+- record searches and summarize actions in terms of companies, products/solutions, buyer problems, capabilities, market boundaries, confidence, and gaps.
 
 The CLI should not decide the next market-improvement action. It should provide compact factual context and durable mutation commands.
 
@@ -94,10 +95,11 @@ The implementation should support this loop:
    - Agent imports findings through `market-source-proposals import`.
    - Agent auto-approves or asks for review based on doubt policy.
 
-3. Source collection.
-   - Agent runs `market-sources collect` for accepted sources.
+3. Evidence collection.
+   - Agent runs `market-sources crawl-session` for normal market research crawls.
+   - Agent uses `market-sources collect` only for targeted, debug, test, or explicitly bounded collection.
    - Agent uses `market-sources crawl-context` and `market-runs get` for factual crawl state.
-   - Agent chooses normal collection, frontier continuation, stale refresh, or source improvement.
+   - Agent chooses serious crawl session, targeted collection, stale refresh, or source improvement.
 
 4. Evidence inspection and extraction.
    - Agent uses `market-documents list/get/search`.
@@ -114,7 +116,7 @@ The implementation should support this loop:
    - Agent writes reports to disk when requested.
    - Agent answers ad-hoc questions from accepted candidates and stored evidence.
 
-After each manual step, `AGENTS.md` should instruct the agent to summarize the result and present sensible next options.
+After each manual step, `AGENTS.md` should instruct the agent to summarize the result in market-research language and present sensible next options. Internal ids, raw counts by implementation status, and audit internals should be omitted unless useful for debugging or requested by the user.
 
 ## Autonomous Mode Implementation
 
@@ -229,6 +231,7 @@ Current v1 support:
 - same-origin, HTML-only bounded collection for `website` and `docs` sources.
 - page-level evidence storage for crawled pages.
 - crawl bounds via `--max-pages` and `--max-depth`.
+- `market-sources crawl-session` for serious manual research crawls. A crawl session runs collection and persisted-frontier continuation within a time/page budget and should be the preferred user-facing crawl command.
 - skipped URL reporting for duplicate, out-of-scope, unsupported content type, max-pages, max-depth, invalid URL, excluded low-value path, and low-quality content cases.
 - persisted `market_crawl_urls` rows for skipped/frontier crawl URLs with reason, depth, discovered-from URL, priority score, and status.
 - compact collection/run/context outputs by default, with bounded drill-down via `--include-frontier --frontier-limit <N>` and `--include-skipped --skipped-limit <N>`.
@@ -245,7 +248,9 @@ Current v1 support:
 
 Known v1 tradeoff: `--failed-only` still relies on document rows. If a failed source later fetches unchanged content matching an older fetched document, no new fetched row is created. Revisit this only if it becomes real workflow pain.
 
-Known v1 crawl-context tradeoff: frontier/skipped rows are persisted and `--continue-frontier` can continue open `max_pages`/`max_depth` URLs. `--refresh-stale` can recollect stale sources and `--refresh-all` can recollect all active sources, but source-specific continuation/refresh filters such as `--source-id` are not implemented yet.
+Known v1 crawl-context tradeoff: frontier/skipped rows are persisted and `--continue-frontier` can continue open `max_pages`/`max_depth` URLs. `crawl-session` packages that continuation into the normal manual workflow. `--refresh-stale` can recollect stale sources and `--refresh-all` can recollect all active sources, but source-specific continuation/refresh filters such as `--source-id` are not implemented yet.
+
+For real market research, agents should prefer `crawl-session` defaults such as `--max-minutes 10 --max-pages 200` over the lower-level `collect` defaults. Smaller `collect --max-pages/--max-depth` runs are appropriate for tests, debugging, or narrow follow-up collection, not the main user-facing crawl.
 
 ## Candidate Identity, Review, And Uncertainty
 
@@ -301,6 +306,21 @@ The agent should ask the user about a candidate when confidence is low, evidence
 
 This policy should be documented in `AGENTS.md` and can be revised from tester feedback before becoming hard-coded behavior.
 
+User-facing review of doubtful items should be framed as market judgment, not lifecycle mechanics. For example, an agent should present a company/product as `core`, `adjacent`, `exclude`, or `needs more evidence`, with a short rationale and strongest evidence. Underlying source proposal and candidate states remain the durable implementation mechanism.
+
+## Reporting Semantics
+
+Reports are generated from accepted candidates and stored evidence, but the Markdown output should be shaped as a strategy artifact rather than a raw candidate dump.
+
+Report generation should:
+
+- include an executive summary, market definition, core companies, products/solutions, buyer problems, capabilities, company-by-capability matrix, boundary cases, evidence confidence/gaps, and evidence appendix where data exists.
+- omit empty placeholder sections such as "No accepted claims yet."
+- separate companies from products instead of mixing both in one table.
+- handle same-name company/product pairs by labeling them clearly or avoiding duplicate-looking rows.
+- keep candidate ids and document ids mainly in the appendix or traceability sections, not in the main narrative.
+- include adjacent or boundary cases when available, clearly separated from core market participants.
+
 ## Current CLI Workflows
 
 Implemented workflows:
@@ -312,6 +332,7 @@ Implemented workflows:
 - import/list/get/review source proposals and accept them into market sources
 - market search context/history/record
 - collect `exact_url`, `website`, and `docs` evidence into documents
+- serious crawl sessions for manual research crawls
 - crawl context, run inspection, frontier continuation, stale refresh, and refresh-all
 - list/get/search documents
 - validate/import/update/audit/review market candidates
@@ -322,10 +343,10 @@ Implemented workflows:
 
 Near-term missing capabilities:
 
-- continuous market improvement instructions in `AGENTS.md`.
-- explicit manual-mode "next action options" guidance.
-- auto-approval/doubt guidance in `AGENTS.md`.
-- stronger ad-hoc Q&A guidance.
+- market-research language layer in `AGENTS.md` so normal chat output avoids implementation spam.
+- strategy-grade Markdown report output with company/product separation, no empty placeholders, and a capability matrix.
+- boundary-case review presentation as core/adjacent/exclude/needs-more-evidence.
+- validation that agents use `crawl-session` for serious manual crawls rather than low-limit collection defaults.
 - autonomous scheduling/prioritization across markets.
 - token/budget controls.
 - report delivery through configured channels.
@@ -348,7 +369,8 @@ For market behavior, prefer tests around:
 - evidence requirements and no-guessing constraints.
 - review state transitions.
 - source collection audit output.
-- read-only overview/report generation from accepted candidates.
+- crawl session behavior and summaries for serious manual research crawls.
+- read-only overview/report generation from accepted candidates, including company/product separation and omitted empty sections.
 - validation for metadata, uncertainty, and evidence references.
 
 ## Assumptions
