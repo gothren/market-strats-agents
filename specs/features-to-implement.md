@@ -52,68 +52,7 @@ Acceptance:
 - The user does not need to understand source proposals, market candidates, review states, extraction runs, or audit internals to follow progress.
 - Internal terminology appears only when useful for traceability or when explicitly requested.
 
-## P1.1 - Serious Default Crawl Workflow
-
-Goal:
-
-- Make the default manual crawl workflow serious enough for real market research.
-
-Context:
-
-- The current low-level `collect` defaults are intentionally bounded, but they feel like testing parameters in the main product workflow.
-- `market-sources crawl-session` is already implemented and described in `AGENTS.md`; it should be the preferred user-facing crawl action.
-
-Implementation notes:
-
-- Update specs and `AGENTS.md` so when a user says "crawl", "fetch evidence", or "research these companies", the agent defaults to:
-  - `pnpm ncl market-sources crawl-session --market-id <MARKET_ID> --max-minutes 10 --max-pages 200 --json`
-- Keep `market-sources collect` documented as a lower-level targeted/debug/test command.
-- The crawl session should run an initial collection pass and continue persisted frontier within the budget. If it stops because of time/page budget or low progress, the agent should say whether the evidence is sufficient for analysis or whether another serious crawl session is worthwhile.
-- The user should not need to repeatedly prompt "do more crawling" before analysis is credible.
-
-Acceptance:
-
-- A fresh agent following docs uses `crawl-session` for normal market research crawls.
-- The crawl summary tells the user which companies now have useful evidence, which still look thin, and whether the agent recommends extracting intelligence or crawling further.
-- Low-level crawl counters remain available for debugging, but the default user summary is concise.
-
-## P1.2 - Strategy-Grade Market Report
-
-Goal:
-
-- Make generated market reports useful strategy artifacts rather than database-shaped Markdown.
-
-Context:
-
-- The current report blends companies and products in one table, duplicates same-name company/product rows without explanation, and includes empty placeholder sections.
-- Users expect synthesis: who is in the market, what problems they target, what capabilities recur, where the boundaries are, and what is uncertain.
-
-Implementation notes:
-
-- Update the report backlog/spec so the Markdown report contains:
-  - executive summary.
-  - market definition.
-  - core companies researched.
-  - products/solutions.
-  - buyer problems.
-  - solution capability map.
-  - company-by-capability matrix.
-  - adjacent/boundary cases.
-  - evidence confidence and gaps.
-  - evidence appendix.
-- Omit empty sections such as "No accepted claims yet."
-- Separate companies from products. If a company and product have the same name, label them clearly or avoid duplicate row presentation.
-- Keep candidate ids and document ids in the evidence appendix or optional debug output, not as the main report texture.
-- Include adjacent/boundary cases when useful, but distinguish them from core market participants.
-
-Acceptance:
-
-- The Automated Pen Testing report separates companies from products and does not confusingly duplicate Tenzai or XBOW.
-- Empty placeholder sections are omitted.
-- A reader can understand the market's companies, solutions, problems, and recurring capabilities without knowing the candidate data model.
-- Evidence-backedness remains visible through an appendix.
-
-## P1.3 - Boundary Case Review UX
+## P1.1 - Boundary Case Review UX
 
 Goal:
 
@@ -141,7 +80,7 @@ Acceptance:
 - The user can decide without understanding proposed/accepted/rejected candidate mechanics.
 - Review outcomes still mutate the underlying source/candidate state correctly.
 
-## P1.4 - Auto-Approval Policy Refinement
+## P1.2 - Auto-Approval Policy Refinement
 
 Goal:
 
@@ -164,7 +103,7 @@ Acceptance:
 - Accepted intelligence remains evidence-backed.
 - Doubtful companies/products/problems/capabilities are not silently accepted.
 
-## P1.5 - Manual Workflow Tester Scenario
+## P1.3 - Manual Workflow Tester Scenario
 
 Goal:
 
