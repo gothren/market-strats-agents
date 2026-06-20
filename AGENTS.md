@@ -302,13 +302,21 @@ pnpm ncl market-sources add \
   --json
 ```
 
-Run collection:
+When the user asks to crawl a market, run a bounded crawl session rather than asking them to repeatedly prompt for more crawling:
+
+```bash
+pnpm ncl market-sources crawl-session --market-id <MARKET_ID> --max-minutes 10 --max-pages 200 --json
+```
+
+The session runs an initial collection pass and then automatically continues persisted frontier until it hits the time/page/run budget, exhausts frontier, or stops making progress. Report `stop_reason`, stored/unchanged/failed/skipped counts, frontier remaining, and whether you recommend extraction, more source discovery, or another crawl session.
+
+Use single-pass collection only for targeted debugging, retries, or explicitly small collection tasks:
 
 ```bash
 pnpm ncl market-sources collect --market-id <MARKET_ID> --json
 ```
 
-Default website/docs crawling collects up to 25 pages per source at depth 2. This is the normal first crawl because it reaches product/docs landing pages and one additional level while staying bounded. Optionally set tighter page and depth limits for quick tests or targeted retries:
+Default website/docs collection collects up to 25 pages per source at depth 2 per pass. Optionally set tighter page and depth limits for quick tests or targeted retries:
 
 ```bash
 pnpm ncl market-sources collect --market-id <MARKET_ID> --max-pages 10 --max-depth 1 --json
@@ -389,7 +397,7 @@ Report:
 
 Repeated collection of unchanged `exact_url`, `website`, or `docs` content should return `unchanged_documents` and should not create duplicate fetched evidence rows. Treat `stored_documents: 0` with `unchanged_documents > 0` as a successful no-op, not a failed collection.
 
-Current collection support is intentionally narrow. `exact_url` sources fetch one page. `website` and `docs` sources run a same-origin, HTML-only bounded crawl with default bounds of 25 pages per source and depth 2, and store one document per page. The crawler normalizes discovered URLs by removing fragments and non-root trailing slashes before queueing/storing, skips common low-value paths such as careers, privacy, legal, contact, login/signup, demo/request-demo/book-a-demo, sales/talk-to-sales, get-started, events, webinars, press, and newsroom pages; it does not skip pricing pages. It prioritizes high-value paths such as docs, security, product, platform, solutions, customers, case studies, blog, changelog, integrations, pricing, developers, and API pages when crawl bounds cut off the run. Crawled HTML with less than 300 characters of extracted text is skipped as `low_quality_content`. Skipped/frontier URLs are persisted for later audit, but large arrays are omitted unless `--include-skipped` or `--include-frontier` is supplied with bounded limits. Open frontier rows are deduplicated by market, source, and normalized URL, so repeated bounded crawls keep one open work item per URL while preserving historical audit rows. `max_pages` and `max_depth` rows are treated as open frontier context, and `--continue-frontier` fetches those persisted frontier URLs before returning to roots. In continuation summaries, `frontier_urls_loaded` means open frontier rows loaded into the queue, `frontier_urls_attempted` means loaded frontier rows actually processed before crawl limits stopped the run, and `frontier_urls_updated` means old frontier rows whose status changed, including `superseded` rows left queued after the new run hit `max_pages`. `--refresh-stale` recollects only active sources whose latest fetched document is older than `--stale-days`, and reports fresh sources in `skipped_sources`; `--refresh-all` recollects all active sources. Crawl-context diagnostics are computed on read from stored facts; they are not recommendations and should not replace agent judgment. Other valid source types such as `blog`, `rss`, `search_query`, `slack`, and `manual` should be reported as unsupported for collection v1, not treated as exact URLs.
+Current collection support is intentionally narrow. `exact_url` sources fetch one page. `website` and `docs` sources run a same-origin, HTML-only bounded crawl with default bounds of 25 pages per source and depth 2, and store one document per page. The crawler normalizes discovered URLs by removing fragments and non-root trailing slashes before queueing/storing, skips common low-value paths such as careers, privacy, legal, contact, login/signup, demo/request-demo/book-a-demo, sales/talk-to-sales, get-started, events, webinars, press, and newsroom pages; it does not skip pricing pages. It prioritizes high-value paths such as docs, security, product, platform, solutions, customers, case studies, blog, changelog, integrations, pricing, developers, and API pages when crawl bounds cut off the run. Crawled HTML with less than 300 characters of extracted text is skipped as `low_quality_content`. Skipped/frontier URLs are persisted for later audit, but large arrays are omitted unless `--include-skipped` or `--include-frontier` is supplied with bounded limits. Open frontier rows are deduplicated by market, source, and normalized URL, so repeated bounded crawls keep one open work item per URL while preserving historical audit rows. `max_pages` and `max_depth` rows are treated as open frontier context, and `--continue-frontier` fetches those persisted frontier URLs before returning to roots. In continuation summaries, `frontier_urls_loaded` means open frontier rows loaded into the queue, `frontier_urls_attempted` means loaded frontier rows actually processed before crawl limits stopped the run, and `frontier_urls_updated` means loaded frontier rows whose status changed after an attempted fetch. Loaded frontier rows that are not attempted because the run hits `max_pages` stay open for later continuation. `--refresh-stale` recollects only active sources whose latest fetched document is older than `--stale-days`, and reports fresh sources in `skipped_sources`; `--refresh-all` recollects all active sources. Crawl-context diagnostics are computed on read from stored facts; they are not recommendations and should not replace agent judgment. Other valid source types such as `blog`, `rss`, `search_query`, `slack`, and `manual` should be reported as unsupported for collection v1, not treated as exact URLs.
 
 ## Proposing Agent-Discovered Sources
 

@@ -13,134 +13,176 @@ Use this format so coding agents can pick up work without a long planning thread
 - `Implementation notes`: constraints, preferred direction, and known decisions.
 - `Acceptance`: what must be true before the item can be removed.
 
-# Epic 1 / Deliverable 1 - Manual Prompt-Driven Workflow
+# Epic 1 / Deliverable 1 - Manual Market Research Workflow UX
 
 Goal:
 
-- Make the manual chat-driven workflow work well end to end for a product strategist using Codex, Claude Code, or a similar agent with the CLI loaded.
+- Make the manual chat-driven workflow feel like market research for a product strategist, not like operating an internal evidence pipeline.
 
 Context:
 
 - The main primitives already exist: guided setup, source proposals, search context/history, collection, crawl context, document search, candidate import/audit/review/change detection, maps, reports, and uncertainty.
-- The next gap is product workflow quality: the agent needs clear instructions for step-by-step operation, next-action options, auto-approval, asking only on doubt, and ad-hoc Q&A.
+- User testing on the Automated Pen Testing market showed three priority problems:
+  - agent output is too spammy and exposes implementation language such as sources, candidates, extraction, accepted/proposed, run ids, and audit internals.
+  - default crawling feels like a smoke test; users had to ask repeatedly for a serious crawl.
+  - generated reports are too mechanical, duplicate companies/products, and include empty sections such as "No accepted claims yet."
 - The CLI should remain a context/tool layer. The agent should do the reasoning.
 
-## P1.1 - Source Proposal Auto-Approval Policy Refinement
+## P1.0 - Market Research Language Layer
 
 Goal:
 
-- Refine and validate the source proposal auto-approval policy so agents can apply it reliably.
+- Make all default user-facing summaries use market-research language.
 
 Context:
 
-- Source proposals already support proposed/accepted/rejected states.
-- `AGENTS.md` now has a first-pass policy, but it needs tester validation, examples, and likely sharper edge-case handling.
+- Product strategists care about companies, products/solutions, buyer problems, capabilities, market boundaries, confidence, and gaps.
+- Internal concepts such as sources, candidates, extraction runs, proposal states, audit findings, ids, and JSON payloads are useful for agents and debugging, but they should not dominate normal chat output.
 
 Implementation notes:
 
-- Test the policy with another agent on real source-search workflows.
-- Add examples for auto-accept, auto-reject, and ask-user cases if testers find ambiguity.
-- Refine guidance around official docs/websites, third-party sources, private/internal sources, duplicates, and adjacent-market pages.
-- Use existing source proposal review commands; do not add new CLI commands for this item unless testing shows current commands are insufficient.
+- Update `AGENTS.md` manual workflow guidance so after each step the agent reports market concepts first.
+- CLI ids, run ids, counts by internal status, and audit internals should be omitted unless the user asks for traceability, debugging, or exact command output.
+- Preferred summaries should look like: "I found 5 core companies, 6 products, 3 recurring capabilities, 2 buyer problems, and 4 boundary cases."
+- Replace "candidate/source/proposal/extraction" wording in default next actions with "companies to research", "evidence gathered", "problems/capabilities found", "boundary cases to decide", and "market report".
 
 Acceptance:
 
-- A tester agent can search for sources, import proposals, auto-review low-ambiguity proposals, and ask the user only for doubtful ones.
-- Accepted proposals become active sources and rejected proposals remain durable memory.
-- The agent explains why it auto-accepted, auto-rejected, or asked for review.
+- A tester agent can run setup, crawling, extraction, review, and reporting while keeping normal chat output readable to a product strategist.
+- The user does not need to understand source proposals, market candidates, review states, extraction runs, or audit internals to follow progress.
+- Internal terminology appears only when useful for traceability or when explicitly requested.
 
-## P1.2 - Candidate Auto-Approval Policy Refinement
+## P1.1 - Serious Default Crawl Workflow
 
 Goal:
 
-- Refine and validate the candidate auto-approval policy so agents can accept obvious candidates and ask about doubtful ones.
+- Make the default manual crawl workflow serious enough for real market research.
 
 Context:
 
-- Candidate validation, audit, review, uncertainty, and change detection already exist.
-- `AGENTS.md` now has a first-pass policy, but it needs tester validation, examples, and likely sharper edge-case handling.
+- The current low-level `collect` defaults are intentionally bounded, but they feel like testing parameters in the main product workflow.
+- `market-sources crawl-session` is already implemented and described in `AGENTS.md`; it should be the preferred user-facing crawl action.
 
 Implementation notes:
 
-- Test the policy with another agent on real extraction/review workflows.
-- Add examples for auto-accept, auto-reject, and ask-user cases if testers find ambiguity.
-- Refine guidance around vendor-only evidence, single-evidence candidates, uncertainty, duplicates, category judgment, and review notes.
+- Update specs and `AGENTS.md` so when a user says "crawl", "fetch evidence", or "research these companies", the agent defaults to:
+  - `pnpm ncl market-sources crawl-session --market-id <MARKET_ID> --max-minutes 10 --max-pages 200 --json`
+- Keep `market-sources collect` documented as a lower-level targeted/debug/test command.
+- The crawl session should run an initial collection pass and continue persisted frontier within the budget. If it stops because of time/page budget or low progress, the agent should say whether the evidence is sufficient for analysis or whether another serious crawl session is worthwhile.
+- The user should not need to repeatedly prompt "do more crawling" before analysis is credible.
 
 Acceptance:
 
-- A tester agent can extract candidates from stored documents, validate/import/audit them, auto-review low-ambiguity candidates, and present only doubtful candidates to the user.
-- Accepted candidates remain evidence-backed.
-- Doubtful candidates are not silently accepted.
+- A fresh agent following docs uses `crawl-session` for normal market research crawls.
+- The crawl summary tells the user which companies now have useful evidence, which still look thin, and whether the agent recommends extracting intelligence or crawling further.
+- Low-level crawl counters remain available for debugging, but the default user summary is concise.
 
-## P1.3 - Continuous Market Improvement Workflow
+## P1.2 - Strategy-Grade Market Report
 
 Goal:
 
-- Give the agent a repeatable manual-mode loop for improving an existing market over time.
+- Make generated market reports useful strategy artifacts rather than database-shaped Markdown.
 
 Context:
 
-- Users should be able to say "improve this market" after prior searches/crawls/extractions.
-- The CLI already exposes search history, market search context, crawl context, candidate audits, changes, maps, and reports.
+- The current report blends companies and products in one table, duplicates same-name company/product rows without explanation, and includes empty placeholder sections.
+- Users expect synthesis: who is in the market, what problems they target, what capabilities recur, where the boundaries are, and what is uncertain.
 
 Implementation notes:
 
-- Add `Continuous Market Improvement` guidance to `AGENTS.md`.
-- Instruct the agent to gather context from existing commands, choose one improvement objective, act through existing workflows, summarize the result, and offer next options.
-- Improvement objectives may include finding more companies, finding deeper public resources for known companies, refreshing stale sources, continuing open crawl frontier, improving weak/uncertain candidates, resolving review backlog, or generating an updated report.
-- Keep the workflow context-first and non-prescriptive: diagnostics are inputs, not CLI recommendations.
-- Do not add a `market-improvement suggest` command.
+- Update the report backlog/spec so the Markdown report contains:
+  - executive summary.
+  - market definition.
+  - core companies researched.
+  - products/solutions.
+  - buyer problems.
+  - solution capability map.
+  - company-by-capability matrix.
+  - adjacent/boundary cases.
+  - evidence confidence and gaps.
+  - evidence appendix.
+- Omit empty sections such as "No accepted claims yet."
+- Separate companies from products. If a company and product have the same name, label them clearly or avoid duplicate row presentation.
+- Keep candidate ids and document ids in the evidence appendix or optional debug output, not as the main report texture.
+- Include adjacent/boundary cases when useful, but distinguish them from core market participants.
 
 Acceptance:
 
-- A tester agent can follow `AGENTS.md` to improve an existing market without needing new CLI features.
-- The agent uses search/crawl/candidate context rather than repeating recent work blindly.
-- The workflow helps improve source coverage, evidence freshness, weak/uncertain candidates, and review backlog.
+- The Automated Pen Testing report separates companies from products and does not confusingly duplicate Tenzai or XBOW.
+- Empty placeholder sections are omitted.
+- A reader can understand the market's companies, solutions, problems, and recurring capabilities without knowing the candidate data model.
+- Evidence-backedness remains visible through an appendix.
 
-## P1.4 - Ad-Hoc Market Q&A Guidance
+## P1.3 - Boundary Case Review UX
 
 Goal:
 
-- Let users ask questions about a market, company, capability, problem, category, source, or evidence item.
+- Present doubtful market-fit decisions as product strategy review, not lifecycle-state review.
 
 Context:
 
-- The CLI already supports document search/get, candidates, maps, and reports.
-- The agent needs clearer behavior for answering from stored evidence without guessing.
+- Boundary cases such as Cobalt, Picus, and AttackIQ were technically represented as proposed candidates with uncertainty, but that language is not natural for the user.
+- The user needs to decide whether a company/product is core, adjacent, excluded, or needs more evidence.
 
 Implementation notes:
 
-- Add ad-hoc Q&A instructions to `AGENTS.md`.
-- Instruct the agent to answer from accepted candidates and stored documents first.
-- Require the agent to cite or reference candidate ids, document ids, titles, or report sections where useful.
-- If stored evidence is insufficient, the agent should say so and offer next options such as search web, crawl more sources, inspect documents, or create a candidate.
-- Keep Q&A read-only unless the user asks to mutate market state.
+- Refactor source/candidate auto-approval guidance so user-facing review packets show:
+  - company/product.
+  - recommended classification: core, adjacent, exclude, or needs more evidence.
+  - short rationale.
+  - strongest evidence.
+  - what accepting or excluding changes in the market map/report.
+- Keep existing candidate/source review commands; this item is about presentation and workflow unless testing proves command support is insufficient.
+- Boundary decisions should not be silently accepted unless clearly in scope and evidence-backed.
 
 Acceptance:
 
-- A tester agent can answer a market question using stored state.
-- The agent does not invent unsupported answers.
-- The agent offers a useful next action when evidence is missing.
+- A tester agent presents Cobalt, Picus, and AttackIQ-style cases as strategic boundary decisions.
+- The user can decide without understanding proposed/accepted/rejected candidate mechanics.
+- Review outcomes still mutate the underlying source/candidate state correctly.
 
-## P1.5 - Manual Workflow Tester Script / Scenario
+## P1.4 - Auto-Approval Policy Refinement
 
 Goal:
 
-- Provide a repeatable manual test scenario for another agent to validate Deliverable 1.
+- Refine source and candidate auto-approval policy after the UX language/report/crawl changes land.
 
 Context:
 
-- The product is agent-operated, so manual validation should test whether an agent can follow the docs, not just whether commands pass.
+- Source proposals, candidate validation, audit, review, uncertainty, and change detection already exist.
+- Policy refinement is still useful, but lower priority than making the workflow understandable to users.
+
+Implementation notes:
+
+- Test with another agent on real source-search and extraction/review workflows.
+- Add examples for auto-accept, auto-reject, and ask-user cases where testers find ambiguity.
+- Refine guidance around official docs/websites, third-party sources, private/internal sources, duplicates, vendor-only evidence, single-evidence candidates, uncertainty, and category judgment.
+
+Acceptance:
+
+- A tester agent can search, crawl, extract, and review while asking the user only for doubtful market judgment.
+- Accepted intelligence remains evidence-backed.
+- Doubtful companies/products/problems/capabilities are not silently accepted.
+
+## P1.5 - Manual Workflow Tester Scenario
+
+Goal:
+
+- Provide a repeatable scenario for another agent to validate the manual workflow as a market research experience.
+
+Context:
+
+- The product is agent-operated, so validation should test whether an agent can produce a useful product-strategy experience, not just whether commands pass.
 
 Implementation notes:
 
 - Add a short tester prompt or scenario to `AGENTS.md` or a spec note.
-- Cover setup, source search/proposal review, collection, extraction, candidate review, report generation, and ad-hoc Q&A.
-- The scenario should tell the tester agent what to try and what success looks like without requiring code changes.
+- Cover setup, company/source discovery, serious crawling via `crawl-session`, extraction into companies/problems/capabilities, boundary-case review, report generation, and ad-hoc Q&A.
+- Include success criteria for chat output quality: user sees market concepts first and internal workflow terms only when requested.
 
 Acceptance:
 
-- A separate Codex/Claude agent can run the scenario and report whether the manual workflow is understandable.
+- A separate Codex/Claude agent can run the scenario and report whether the manual workflow is understandable and useful.
 - Feedback from the tester can be turned into concrete backlog items.
 
 # Epic 2 / Deliverable 2 - Autonomous NanoClaw Workflow

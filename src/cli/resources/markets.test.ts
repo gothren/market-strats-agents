@@ -1580,6 +1580,179 @@ describe('market sources CLI resource', () => {
     }
   });
 
+  it('runs a bounded crawl session across frontier continuations', async () => {
+    await registerMarketsResource();
+
+    const created = await dispatch(
+      {
+        id: 'req-create-market-crawl-session',
+        command: 'markets-create',
+        args: { name: 'AI Security', description: null },
+      },
+      { caller: 'host' },
+    );
+    expect(created.ok).toBe(true);
+    const marketId = (created as { ok: true; data: { market: { id: string } } }).data.market.id;
+
+    await dispatch(
+      {
+        id: 'req-source-add-crawl-session',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: 'https://session.example.com',
+          source_type: 'website',
+          trust_tier: 'official',
+        },
+      },
+      { caller: 'host' },
+    );
+
+    const pages = ['one', 'two', 'three', 'four'];
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === 'https://session.example.com/') {
+        return new Response(
+          [
+            '<html><head><title>Session</title></head><body>',
+            longText(
+              'Session vendor page describes AI security product capabilities, platform architecture, integrations, governance, runtime controls, evidence collection, deployment models, and operational outcomes.',
+            ),
+            ...pages.map((page) => `<a href="/${page}">${page}</a>`),
+            '</body></html>',
+          ].join(''),
+          { status: 200, headers: { 'content-type': 'text/html' } },
+        );
+      }
+      for (const page of pages) {
+        if (url === `https://session.example.com/${page}`) {
+          return new Response(
+            `<html><head><title>${page}</title></head><body>${longText(
+              'This page describes AI security evidence, product capabilities, monitoring workflows, deployment controls, integrations, governance, runtime protection, and customer outcomes for enterprise teams.',
+            )}</body></html>`,
+            { status: 200, headers: { 'content-type': 'text/html' } },
+          );
+        }
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const session = await dispatch(
+      {
+        id: 'req-market-sources-crawl-session',
+        command: 'market-sources-crawl-session',
+        args: { market_id: marketId, 'per-run-max-pages': 2, 'max-pages': 10, 'max-runs': 10 },
+      },
+      { caller: 'host' },
+    );
+
+    expect(session.ok).toBe(true);
+    if (session.ok) {
+      expect(session.data).toMatchObject({
+        market_id: marketId,
+        stop_reason: 'frontier_exhausted',
+        runs: expect.arrayContaining([
+          expect.objectContaining({ mode: 'initial' }),
+          expect.objectContaining({ mode: 'continue_frontier' }),
+        ]),
+        summary: {
+          runs: 3,
+          visited: 5,
+          stored_documents: 5,
+          failed: 0,
+          unsupported: 0,
+          frontier_remaining: 0,
+        },
+      });
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
+  it('stops a crawl session when the total page budget is reached', async () => {
+    await registerMarketsResource();
+
+    const created = await dispatch(
+      {
+        id: 'req-create-market-crawl-session-budget',
+        command: 'markets-create',
+        args: { name: 'AI Security', description: null },
+      },
+      { caller: 'host' },
+    );
+    expect(created.ok).toBe(true);
+    const marketId = (created as { ok: true; data: { market: { id: string } } }).data.market.id;
+
+    await dispatch(
+      {
+        id: 'req-source-add-crawl-session-budget',
+        command: 'market-sources-add',
+        args: {
+          market_id: marketId,
+          url: 'https://budget.example.com',
+          source_type: 'website',
+          trust_tier: 'official',
+        },
+      },
+      { caller: 'host' },
+    );
+
+    const pages = ['one', 'two', 'three', 'four'];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url === 'https://budget.example.com/') {
+          return new Response(
+            [
+              '<html><head><title>Budget</title></head><body>',
+              longText(
+                'Budget vendor page describes AI security product capabilities, platform architecture, integrations, governance, runtime controls, evidence collection, deployment models, and operational outcomes.',
+              ),
+              ...pages.map((page) => `<a href="/${page}">${page}</a>`),
+              '</body></html>',
+            ].join(''),
+            { status: 200, headers: { 'content-type': 'text/html' } },
+          );
+        }
+        for (const page of pages) {
+          if (url === `https://budget.example.com/${page}`) {
+            return new Response(
+              `<html><head><title>${page}</title></head><body>${longText(
+                'This page describes AI security evidence, product capabilities, monitoring workflows, deployment controls, integrations, governance, runtime protection, and customer outcomes for enterprise teams.',
+              )}</body></html>`,
+              { status: 200, headers: { 'content-type': 'text/html' } },
+            );
+          }
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }),
+    );
+
+    const session = await dispatch(
+      {
+        id: 'req-market-sources-crawl-session-budget',
+        command: 'market-sources-crawl-session',
+        args: { market_id: marketId, 'per-run-max-pages': 2, 'max-pages': 3, 'max-runs': 10 },
+      },
+      { caller: 'host' },
+    );
+
+    expect(session.ok).toBe(true);
+    if (session.ok) {
+      expect(session.data).toMatchObject({
+        stop_reason: 'page_budget',
+        summary: {
+          runs: 2,
+          visited: 3,
+          stored_documents: 3,
+          frontier_remaining: expect.any(Number),
+        },
+      });
+      expect((session.data as { summary: { frontier_remaining: number } }).summary.frontier_remaining).toBeGreaterThan(
+        0,
+      );
+    }
+  });
+
   it('limits frontier and skipped rows in market run inspection', async () => {
     await registerMarketsResource();
 
@@ -2571,7 +2744,7 @@ describe('market sources CLI resource', () => {
           stored_documents: 1,
           frontier_urls_loaded: 3,
           frontier_urls_attempted: 1,
-          frontier_urls_updated: 3,
+          frontier_urls_updated: 1,
         },
         stored_documents: [{ url: 'https://continue.example.com/security' }],
       });
@@ -2601,12 +2774,12 @@ describe('market sources CLI resource', () => {
         expect.objectContaining({
           url: 'https://continue.example.com/product',
           reason: 'max_pages',
-          status: 'superseded',
+          status: 'open',
         }),
         expect.objectContaining({
           url: 'https://continue.example.com/about',
           reason: 'max_pages',
-          status: 'superseded',
+          status: 'open',
         }),
       ]);
     }

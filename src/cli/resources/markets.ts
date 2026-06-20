@@ -54,7 +54,8 @@ import {
   type MarketSourceTrustTier,
   type MarketSourceType,
 } from '../../db/markets.js';
-import { register } from '../registry.js';
+import type { CallerContext } from '../frame.js';
+import { lookup, register } from '../registry.js';
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 
@@ -1567,6 +1568,50 @@ interface CrawlSkippedUrl {
   status: MarketCrawlUrlStatus;
 }
 
+interface CollectMarketSourcesArgs {
+  market_id: string;
+  failed_only: boolean;
+  continue_frontier: boolean;
+  refresh_stale: boolean;
+  refresh_all: boolean;
+  stale_days: number;
+  include_skipped: boolean;
+  skipped_limit: number;
+  max_pages: number;
+  max_depth: number;
+}
+
+interface MarketSourcesCollectData {
+  run: MarketRun;
+  stored_documents: unknown[];
+  unchanged_documents: unknown[];
+  failed: unknown[];
+  unsupported: unknown[];
+  skipped_sources: unknown[];
+  skipped_urls: unknown[];
+  skipped_urls_returned: number;
+  skipped_urls_limit: number;
+  skipped_urls_omitted: number;
+  summary: {
+    visited: number;
+    stored_documents: number;
+    unchanged_documents: number;
+    skipped: number;
+    skipped_sources: number;
+    failed: number;
+    unsupported: number;
+    frontier_created: number;
+    frontier_urls_loaded: number;
+    frontier_urls_attempted: number;
+    frontier_urls_updated: number;
+    refresh_mode: 'all' | 'stale' | null;
+  };
+  documents: MarketDocument[];
+  next_actions: string[];
+}
+
+type CrawlSessionStopReason = 'frontier_exhausted' | 'page_budget' | 'time_budget' | 'max_runs' | 'no_progress';
+
 async function storeFetchedPage(args: {
   source: MarketSource;
   run: MarketRun;
@@ -1739,6 +1784,7 @@ async function collectCrawlSource(args: {
   while (queue.length > 0) {
     if (visited >= args.maxPages) {
       for (const queued of queue) {
+        if (queued.frontierRowId) continue;
         skippedUrls.push({
           source_id: args.source.id,
           url: queued.url,
@@ -1748,7 +1794,6 @@ async function collectCrawlSource(args: {
           priority_score: highValueCrawlScore(queued.url),
           status: 'open',
         });
-        if (queued.frontierRowId) frontierUpdates.push({ id: queued.frontierRowId, status: 'superseded' });
       }
       break;
     }
@@ -2127,6 +2172,179 @@ register({
       summary,
       documents,
       next_actions: [`ncl market-documents list --market-id ${args.market_id}`, `ncl markets get ${args.market_id}`],
+    };
+  },
+});
+
+async function runMarketSourcesCollect(
+  args: CollectMarketSourcesArgs,
+  ctx: CallerContext,
+): Promise<MarketSourcesCollectData> {
+  const command = lookup('market-sources-collect');
+  if (!command) throw new Error('market-sources-collect command is not registered');
+  return (await command.handler(args, ctx)) as MarketSourcesCollectData;
+}
+
+register({
+  name: 'market-sources-crawl-session',
+  description: 'Run a bounded multi-pass crawl session across market sources and persisted frontier.',
+  resource: 'market-sources',
+  access: 'open',
+  parseArgs: (raw) => ({
+    market_id: str(raw.market_id ?? raw['market-id'], 'market_id'),
+    max_minutes: positiveInt(raw.max_minutes ?? raw['max-minutes'], 10, 'max_minutes'),
+    max_pages: positiveInt(raw.max_pages ?? raw['max-pages'], 200, 'max_pages'),
+    max_runs: positiveInt(raw.max_runs ?? raw['max-runs'], 20, 'max_runs'),
+    per_run_max_pages: positiveInt(
+      raw.per_run_max_pages ?? raw['per-run-max-pages'],
+      DEFAULT_CRAWL_MAX_PAGES,
+      'per_run_max_pages',
+    ),
+    max_depth: positiveInt(raw.max_depth ?? raw['max-depth'], DEFAULT_CRAWL_MAX_DEPTH, 'max_depth'),
+    include_skipped: bool(raw.include_skipped ?? raw['include-skipped']),
+    skipped_limit: positiveInt(raw.skipped_limit ?? raw['skipped-limit'], DEFAULT_CRAWL_ROW_LIMIT, 'skipped_limit'),
+  }),
+  handler: async (args, ctx) => {
+    const market = getMarket(args.market_id);
+    if (!market) throw new Error(`market not found: ${args.market_id}`);
+
+    const deadlineMs = Date.now() + args.max_minutes * 60 * 1000;
+    const runs: Array<{
+      run_id: string;
+      mode: 'initial' | 'continue_frontier';
+      visited: number;
+      stored_documents: number;
+      unchanged_documents: number;
+      skipped: number;
+      failed: number;
+      unsupported: number;
+      frontier_created: number;
+      frontier_urls_loaded: number;
+      frontier_urls_attempted: number;
+      frontier_urls_updated: number;
+    }> = [];
+    const summary = {
+      runs: 0,
+      visited: 0,
+      stored_documents: 0,
+      unchanged_documents: 0,
+      skipped: 0,
+      failed: 0,
+      unsupported: 0,
+      skipped_sources: 0,
+      frontier_created: 0,
+      frontier_urls_loaded: 0,
+      frontier_urls_attempted: 0,
+      frontier_urls_updated: 0,
+      frontier_remaining: 0,
+    };
+    let stopReason: CrawlSessionStopReason = 'frontier_exhausted';
+    let continueFrontier = false;
+
+    while (runs.length < args.max_runs && summary.visited < args.max_pages) {
+      if (Date.now() >= deadlineMs) {
+        stopReason = 'time_budget';
+        break;
+      }
+
+      const remainingPageBudget = Math.max(1, args.max_pages - summary.visited);
+      const data = await runMarketSourcesCollect(
+        {
+          market_id: args.market_id,
+          failed_only: false,
+          continue_frontier: continueFrontier,
+          refresh_stale: false,
+          refresh_all: false,
+          stale_days: 60,
+          include_skipped: args.include_skipped,
+          skipped_limit: args.skipped_limit,
+          max_pages: Math.min(args.per_run_max_pages, remainingPageBudget),
+          max_depth: args.max_depth,
+        },
+        ctx,
+      );
+
+      runs.push({
+        run_id: data.run.id,
+        mode: continueFrontier ? 'continue_frontier' : 'initial',
+        visited: data.summary.visited,
+        stored_documents: data.summary.stored_documents,
+        unchanged_documents: data.summary.unchanged_documents,
+        skipped: data.summary.skipped,
+        failed: data.summary.failed,
+        unsupported: data.summary.unsupported,
+        frontier_created: data.summary.frontier_created,
+        frontier_urls_loaded: data.summary.frontier_urls_loaded,
+        frontier_urls_attempted: data.summary.frontier_urls_attempted,
+        frontier_urls_updated: data.summary.frontier_urls_updated,
+      });
+      summary.runs += 1;
+      summary.visited += data.summary.visited;
+      summary.stored_documents += data.summary.stored_documents;
+      summary.unchanged_documents += data.summary.unchanged_documents;
+      summary.skipped += data.summary.skipped;
+      summary.failed += data.summary.failed;
+      summary.unsupported += data.summary.unsupported;
+      summary.skipped_sources += data.summary.skipped_sources;
+      summary.frontier_created += data.summary.frontier_created;
+      summary.frontier_urls_loaded += data.summary.frontier_urls_loaded;
+      summary.frontier_urls_attempted += data.summary.frontier_urls_attempted;
+      summary.frontier_urls_updated += data.summary.frontier_urls_updated;
+
+      const openFrontierCount = listOpenMarketCrawlUrls(args.market_id).length;
+      summary.frontier_remaining = openFrontierCount;
+
+      if (summary.visited >= args.max_pages) {
+        stopReason = 'page_budget';
+        break;
+      }
+      if (Date.now() >= deadlineMs) {
+        stopReason = 'time_budget';
+        break;
+      }
+      if (openFrontierCount === 0) {
+        stopReason = 'frontier_exhausted';
+        break;
+      }
+      if (
+        data.summary.visited === 0 &&
+        data.summary.frontier_urls_attempted === 0 &&
+        data.summary.frontier_created === 0
+      ) {
+        stopReason = 'no_progress';
+        break;
+      }
+
+      continueFrontier = true;
+    }
+
+    if (runs.length >= args.max_runs && summary.frontier_remaining > 0 && summary.visited < args.max_pages) {
+      stopReason = 'max_runs';
+    }
+
+    return {
+      market_id: args.market_id,
+      stop_reason: stopReason,
+      budget: {
+        max_minutes: args.max_minutes,
+        max_pages: args.max_pages,
+        max_runs: args.max_runs,
+        per_run_max_pages: args.per_run_max_pages,
+        max_depth: args.max_depth,
+      },
+      summary,
+      runs,
+      next_actions:
+        summary.stored_documents > 0 || summary.unchanged_documents > 0
+          ? [
+              `ncl market-documents list --market-id ${args.market_id} --compact --json`,
+              `ncl market-candidates validate --market-id ${args.market_id} --payload-file <JSON_FILE> --json`,
+              `ncl market-sources crawl-context --market-id ${args.market_id} --json`,
+            ]
+          : [
+              `ncl market-sources crawl-context --market-id ${args.market_id} --include-frontier --frontier-limit 25 --json`,
+              `ncl market-search context --market-id ${args.market_id} --json`,
+            ],
     };
   },
 });
