@@ -151,14 +151,16 @@ Keep ad-hoc Q&A read-only unless the user asks to change market state.
 Auto-accept source proposals when all are true:
 
 - official or clearly trusted source
-- clearly in scope for the market boundary
+- plausibly in scope for the market boundary or useful for boundary research
 - non-duplicate
 - explicit source type such as `website`, `docs`, or `exact_url`
 - no privacy/access ambiguity
 
 Auto-reject source proposals when they are clearly out of scope, duplicate, low-quality, stale/irrelevant third-party commentary, generic directories, marketplaces, or unsupported search-result noise.
 
-Ask the user when source trust, market fit, source type, duplication, privacy/access, or boundary fit is ambiguous. Present your recommendation and reason.
+Ask the user when source trust, source type, duplication, privacy/access, or boundary fit is ambiguous. Present your recommendation and reason.
+
+Official vendor websites, docs roots, and direct product pages are usually safe to auto-accept as research surfaces when the vendor is plausibly relevant. Source acceptance only means "worth crawling"; it does not mean every extracted company, product, or claim is core to the market.
 
 ### Candidates
 
@@ -172,11 +174,26 @@ Auto-accept candidates when all are true:
 - identity is clear and not a duplicate
 - market fit is obvious
 
-Auto-reject candidates when evidence is missing/invalid, market fit is clearly wrong, or a duplicate is already accepted.
+Auto-reject candidates when evidence is missing/invalid, market fit is clearly wrong, a duplicate is already accepted, or the item is only a generic marketing phrase with no concrete market meaning.
 
 Ask the user when confidence is low, evidence is weak/stale/conflicting/unknown, audit has medium/high findings, identity is ambiguous, or category/boundary judgment is needed. Present your recommendation and reason.
 
 Review notes should say whether the decision was auto-approved by policy or user-reviewed.
+
+Use these default examples when deciding:
+
+- Official core vendor: auto-accept a company or product when an official page directly says it performs the market-relevant job and audit is clean.
+- New entrant with one official homepage: auto-accept identity and direct positioning at `medium` confidence when the page is current, vendor-owned, and specific. Do not treat thin evidence as proof of stronger claims.
+- Broad adjacent company with in-scope product: accept the clearly in-scope product, but leave the broader company for boundary review as `core` vs `adjacent`.
+- Human-led service with AI automation: leave for boundary review unless the market boundary explicitly includes human-led services.
+- BAS, security validation, adversary emulation, or adjacent security vendors: treat as adjacent by default unless evidence shows automated pentesting, exploit-path validation, or another explicitly in-scope behavior.
+- Single official evidence: enough for basic identity and product positioning; not enough for independent performance, leadership, market-share, accuracy, or superiority claims.
+- Vendor-only evidence: acceptable for "vendor says/offers/positions X"; comparative or market claims must be framed as vendor-reported or corroborated by non-vendor evidence.
+- Analyst-synthesized buyer problem: acceptable when supported by direct evidence from multiple vendors and phrased as buyer pain, not vendor marketing copy.
+- Recurring capability: accept when it describes product behavior across multiple vendors. Use a neutral analyst label when vendors use variant wording for the same behavior.
+- Combined capability: acceptable when vendors present the behaviors as one workflow; split it if the behaviors are separate buying criteria.
+
+When accepting an in-scope product from a broader adjacent company, explain that distinction in the user-facing summary so the user is not surprised by a product being included while the company remains a boundary case.
 
 ### Boundary Case Review
 

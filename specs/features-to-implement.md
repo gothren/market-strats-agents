@@ -52,30 +52,7 @@ Acceptance:
 - The user does not need to understand source proposals, market candidates, review states, extraction runs, or audit internals to follow progress.
 - Internal terminology appears only when useful for traceability or when explicitly requested.
 
-## P1.1 - Auto-Approval Policy Refinement
-
-Goal:
-
-- Refine source and candidate auto-approval policy after the UX language/report/crawl changes land.
-
-Context:
-
-- Source proposals, candidate validation, audit, review, uncertainty, and change detection already exist.
-- Policy refinement is still useful, but lower priority than making the workflow understandable to users.
-
-Implementation notes:
-
-- Test with another agent on real source-search and extraction/review workflows.
-- Add examples for auto-accept, auto-reject, and ask-user cases where testers find ambiguity.
-- Refine guidance around official docs/websites, third-party sources, private/internal sources, duplicates, vendor-only evidence, single-evidence candidates, uncertainty, and category judgment.
-
-Acceptance:
-
-- A tester agent can search, crawl, extract, and review while asking the user only for doubtful market judgment.
-- Accepted intelligence remains evidence-backed.
-- Doubtful companies/products/problems/capabilities are not silently accepted.
-
-## P1.2 - Manual Workflow Tester Scenario
+## P1.1 - Manual Workflow Tester Scenario
 
 Goal:
 
